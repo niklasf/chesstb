@@ -156,22 +156,29 @@ NODISCARD INLINE Piece_Config rights_dropped(const Piece_Config& ps, Color c, si
 
 // Castling-rook-capture sub-config "r -> (nothing)": a rook holding a right
 // is taken. It leaves as a man, so the child is one lighter and holds one
-// right fewer.
+// right fewer. Like every capture, it expands an opposing pair to free pawns.
 NODISCARD INLINE Piece_Config castling_rook_captured(const Piece_Config& ps, Color c)
 {
 	ASSERT(ps.castling_rights(c) > 0);
 
 	Piece_Config::Castling_Rights_Counts left = ps.castling_rights();
 	left[c] -= 1;
-	Piece_Config res(ps.pieces(), left);
+	const auto pcs = ps.pieces();
+	Piece pcs_cpy[MAX_MAN];
+	std::memcpy(pcs_cpy, pcs.data(), pcs.size() * sizeof(Piece));
+
+	size_t n = pcs.size();
 	if (ps.has_opposing_pair())
-		res.mark_opposing_pair();
-	return res;
+	{
+		pcs_cpy[n++] = WHITE_PAWN;
+		pcs_cpy[n++] = BLACK_PAWN;
+	}
+	return Piece_Config(Span(pcs_cpy, n), left);
 }
 
-// Pair-breaking sub-config "p -> PP": an opposing-pair member captures the free
-// piece at `capture_idx` (an ordinary diagonal capture, or an en-passant
-// capture of a free pawn). Both former pair pawns survive as free pawns and
+// Pair-breaking sub-config "p -> PP": any piece captures the free piece at
+// `capture_idx` (an ordinary diagonal capture, or an en-passant capture of a
+// free pawn). Both former pair pawns survive as free pawns and
 // the captured piece is gone; the result no longer carries the pair.
 NODISCARD INLINE Piece_Config pair_broken_by_capture(const Piece_Config& ps, size_t capture_idx)
 {

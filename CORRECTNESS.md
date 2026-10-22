@@ -1025,7 +1025,7 @@ Anything over 100 is drawn. If the pushed position's only legal moves are en-pas
 
 The parallel passes are interleaving-independent: every table, frontier bit and aggregate a pass produces is a function of the state before the pass, and passes race only through idempotent or single-valued stores.
 
-Dispatches are separated by the thread pool's mutex and its promise and future synchronization, so races occur only inside one dispatch. Cells, flags and bytes are read and written by plain, non-atomic, naturally aligned loads and stores, and the arguments below use only that each such load returns some value stored to that location.
+The argument is conditional on the execution-model assumption MEM (§13.1) for supported architecture/compiler/build combinations. Dispatches are separated by the thread pool's mutex and its promise and future synchronization, so races occur only inside one dispatch. Cells, flags and bytes are read and written by plain, non-atomic, naturally aligned loads and stores. Under MEM these accesses do not tear, each load returns the pre-dispatch value or a value stored to that location during the dispatch, and completed writes are visible to the next dispatch.
 
 ### 9.1 Work partition
 
@@ -1931,6 +1931,7 @@ For the DTZ ranker, a quiet move's distance is d = the child's DTZ + 1, which is
 | --- | --- | --- |
 | RANGE | Every DTM, every DTM50 distance and every cursed DTZ is at most 2045, and every cursed DTZ that a castling exit reads in its twin table is at most 2044. A value of 2047 would coincide with the ILLEGAL code 0x7FF. It arises as a value one ply beyond a child value of 2046 (a win beyond a loss, or a loss beyond a win), or as a composed exit value (u + 1) \| 1 with u ≥ 2045, which initialization writes as a seed even when the cell's final value is smaller, or as the prober's exit y + 2 over a rounded twin value y = 2045. The twin bound 2044 excludes both: a twin of true value at most 2044 is reported at most 2044 (Theorem 12.15), so y + 2 ≤ 2046, and (u + 1) \| 1 ≤ 2045. | §5, §6, §7, §8, §11, §12, Appendix B |
 | LE | The host is little-endian; chesstb and transcribe refuse to start otherwise, and shrink and the probe library assume it | §11, §12 |
+| MEM | Supported architecture/compiler/build combinations preserve the execution model of §9: naturally aligned shared byte and 16-bit loads and stores are indivisible; each load observes the pre-dispatch value or a value stored to that location during the dispatch; and dispatch synchronization publishes completed writes before the next dispatch. Compiler transformations must preserve these properties for the plain, non-atomic accesses. | §9 and the parallel-solver results that depend on it |
 
 ### 13.2 Stored precision
 

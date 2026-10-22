@@ -27,19 +27,18 @@ Available mirrors:
 ```text
 ftp://chessdb:chessdb@ftp.chessdb.cn/pub/chesstb/
 rsync://ftp.chessdb.cn/ftp/pub/chesstb/
-hf://buckets/noobpwnftw/chesstb/
+hf://buckets/chesstb/chesstb/
 ```
 
 In the table below, `...` means a build is in progress, `---` means a build is
 not planned, and Op1 denotes one [opposing pawn pair](#opposing-pawn-pairs).
 
-Shipping files are organized by metric in `wdl/`, `dtz/`, `dtc/`, `dtm/`, and
+Shipping tables are organized by metric in `wdl/`, `dtz/`, `dtc/`, `dtm/`, and
 `dtm50/`. `dtm50/` supersedes `dtm/`; `dtc/` supersedes `dtz/` for pawnful
-materials. Raw generator output uses the same metric directories under `full/`.
-Tables with [castling rights](#castling-rights) follow the same directory
-layout under `castling/`.
+materials. The same layout applies under `full/` for raw generator output and
+`castling/` for tables with [castling rights](#castling-rights).
 
-Default shipping format, including castling tables:
+Shipping size breakdown, including castling tables:
 
 | Material     |   `wdl/` |   `dtz/` |   `dtc/` |   `dtm/` | `dtm50/` |
 |--------------|---------:|---------:|---------:|---------:|---------:|
@@ -54,8 +53,8 @@ Default shipping format, including castling tables:
 | 7 (Pawnless) |  693 GiB | 1.89 TiB |      N/A |      ... |      --- |
 | 7 (Pawnful)  |  3.5 TiB | 5.82 TiB |      --- |      ... |      --- |
 | *Total (≤6)* | 35.7 GiB | 75.6 GiB |  178 GiB |  301 GiB |  1.1 TiB |
-| *Total (≤7)* | 4.21 TiB | 7.79 TiB |      --- |      --- |      --- |
-| 8 (Op1)      |      ... |      ... |      --- |      --- |      --- |
+| *Total (≤7)* | 4.21 TiB | 7.79 TiB |      --- |      ... |      --- |
+| 8 (Op1)      | 5.83 TiB |  7.6 TiB |      --- |      --- |      --- |
 
 **Tablebase filenames are case-sensitive.** Use a case-sensitive filesystem for
 tablebase files and preserve their exact capitalization.

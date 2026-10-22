@@ -10,6 +10,8 @@
 <meta property="og:type" content="website">
 <!-- Chess pieces by Colin M.L. Burnett (https://en.wikipedia.org/wiki/User:Cburnett),
      triple licensed under the GFDL, BSD and GPL; used here under the BSD license. -->
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gloock&family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
@@ -121,7 +123,6 @@ section.reveal { padding-block: 72px; border-top: 1px solid var(--rule); }
 /* clock card */
 .clock { display: grid; gap: 12px; padding: 20px 18px 16px; border: 1px solid var(--rule); border-radius: 10px; background: var(--panel); }
 .clock-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-}
 input[type=range] { width: 100%; accent-color: var(--accent); }
 /* The clock slider spans the chart's plot area (34 and 10 of 420 viewBox units), less half a thumb at each end. */
 #hmc { width: auto; margin-inline: calc(34 / 420 * 100% - 8px) calc(10 / 420 * 100% - 8px); }
@@ -220,8 +221,9 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <a class="brand" href="./">Chess<span>TB</span></a>
     <nav aria-label="Site">
       <a href="./" aria-current="page">Home</a>
+      <a href="whatsnew.html">What's new</a>
       <a href="stats.html">Statistics</a>
-      <a href="https://noobpwnftw-chesstb-explorer.hf.space/">Explorer</a>
+      <a href="https://chesstb-explorer.hf.space/">Explorer</a>
       <a href="https://github.com/noobpwnftw/chesstb">GitHub</a>
     </nav>
   </header>
@@ -247,7 +249,7 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="legend-card">
       <div class="board-col">
         <div class="board-wrap" id="b-legend"></div>
-        <div class="board-caption"><span>KRNKNN · White to move</span><span class="fen">6k1/5n2/8/8/8/5n2/1RK5/1N6 w - - 0 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRNKNN · White to move</span><span class="fen">6k1/5n2/8/8/8/5n2/1RK5/1N6 w - - 0 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="verdict" role="group" aria-label="The famous mate in 262">
         <div class="old"><span class="k">The famous record</span><span class="v">Mate in 262</span></div>
@@ -266,16 +268,16 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-krnknn"></div>
-        <div class="board-caption"><span>KRNKNN · White to move · clock 0</span><span class="fen">7n/8/8/2R4N/8/8/2n5/K2k4 w - - 0 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRNKNN · White to move · clock 0</span><span class="fen">7n/8/8/2R4N/8/8/2n5/K2k4 w - - 0 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">THE LONGEST MATE FROM A FRESH CLOCK, SAME ENDGAME</div>
         <p class="big split">Without the rule this is mate in 69. <em>Within the rule it is mate in 84.</em></p>
         <p>The fastest mate takes too long between captures, so it can't be played. To keep the clock alive, White has to take a longer route, and with a fresh clock, the longest forced mate in this endgame is 84 moves. Only one first move keeps it: Kb2.</p>
         <div class="stat-strip">
-          <div><span class="v">137</span><span class="k">plies to mate, ignoring the rule</span></div>
-          <div><span class="v">167</span><span class="k">plies to mate, within the rule</span></div>
-          <div><span class="v">99</span><span class="k">plies to the first capture with best play</span></div>
+          <div><span class="v">69</span><span class="k">moves to mate, ignoring the rule</span></div>
+          <div><span class="v">84</span><span class="k">moves to mate, within the rule</span></div>
+          <div><span class="v">50</span><span class="k">moves to the first capture with best play</span></div>
         </div>
       </div>
     </div>
@@ -283,7 +285,7 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-puzzle"></div>
-        <div class="board-caption"><span>KRNKNN · White to move · clock 82</span><span class="fen">8/8/8/8/R7/4nKN1/2n5/6k1 w - - 82 42</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRNKNN · White to move · clock 82</span><span class="fen">8/8/8/8/R7/4nKN1/2n5/6k1 w - - 82 42</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">41 MOVES LATER</div>
@@ -303,12 +305,12 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-kqppkq"></div>
-        <div class="board-caption"><span>KQPPKQ · White to move</span><span class="fen">8/4k3/8/Q7/8/7P/P7/q1K5 w - - 0 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KQPPKQ · White to move</span><span class="fen">8/4k3/8/Q7/8/7P/P7/q1K5 w - - 0 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">THE LONGEST MATE FROM A FRESH CLOCK, UP TO SIX PIECES</div>
         <p class="big split">Mate in 184. <em>The rule makes it longer.</em></p>
-        <p>Without the rule this is mate in 182. Within it, White needs two more moves. The next pawn move or capture is 97 plies away, so at clock 3 it's still mate in 184. At clock 4, it's a draw.</p>
+        <p>Without the rule this is mate in 182. Within it, White needs two more moves. The next pawn move or capture is 97 halfmoves away, so at clock 3 it's still mate in 184. At clock 4, it's a draw.</p>
         <div class="stat-strip">
           <div><span class="v">182</span><span class="k">moves to mate, ignoring the rule</span></div>
           <div><span class="v">184</span><span class="k">moves to mate, within the rule</span></div>
@@ -320,7 +322,7 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-squeeze"></div>
-        <div class="board-caption"><span>KRPKN · White to move</span><span class="fen" id="squeeze-fen">8/1n6/8/8/7k/8/1K4RP/8 w - - <b class="clk">0</b> 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRPKN · White to move</span><span class="fen" id="squeeze-fen">8/1n6/8/8/7k/8/1K4RP/8 w - - <b class="clk">0</b> 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">SAME POSITION, DIFFERENT CLOCK</div>
@@ -344,7 +346,7 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-krkr"></div>
-        <div class="board-caption"><span>KRKB · White to move</span><span class="fen" id="krkr-fen">8/8/3k4/8/8/8/8/R3K1b1 w Q - 0 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRKB · White to move</span><span class="fen" id="krkr-fen">8/8/3k4/8/8/8/8/R3K1b1 w Q - 0 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">ROOK AGAINST BISHOP</div>
@@ -363,7 +365,7 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-krkpp"></div>
-        <div class="board-caption"><span>KRKPP · White to move</span><span class="fen" id="krkpp-fen">8/8/8/8/pk6/8/7p/R3K3 w Q - 0 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRKPP · White to move</span><span class="fen" id="krkpp-fen">8/8/8/8/pk6/8/7p/R3K3 w Q - 0 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">ROOK AGAINST TWO PAWNS</div>
@@ -390,7 +392,7 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-krpkr"></div>
-        <div class="board-caption"><span>KRPKR · White to move</span><span class="fen">2r5/8/8/8/1k6/8/5P1K/3R4 w - - 0 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRPKR · White to move</span><span class="fen">2r5/8/8/8/1k6/8/5P1K/3R4 w - - 0 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">ROOK AND PAWN AGAINST ROOK</div>
@@ -416,15 +418,15 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     <div class="pair">
       <div class="board-col">
         <div class="board-wrap" id="b-krpkr2"></div>
-        <div class="board-caption"><span>KRPKR · White to move</span><span class="fen">8/5r2/3R4/8/6k1/8/1P6/3K4 w - - 0 1</span><a class="explore" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
+        <div class="board-caption"><span>KRPKR · White to move</span><span class="fen">8/5r2/3R4/8/6k1/8/1P6/3K4 w - - 0 1</span><a class="explore" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">Open in explorer</a></div>
       </div>
       <div class="story">
         <div class="mat">A 35-MOVE WAIT FOR THE FIRST PUSH</div>
         <p class="big split">Five pushes to go. <em>The first one is 35 moves away.</em></p>
-        <p>White wins, but none of the b-pawn's five pushes can be played for 69 plies. From clock 32, the win is gone.</p>
+        <p>White wins, but none of the b-pawn's five pushes can be played for 69 halfmoves. From clock 32, the win is gone.</p>
         <div class="stat-strip">
           <div><span class="v">5</span><span class="k">pushes still needed</span></div>
-          <div><span class="v">69</span><span class="k">plies to the first push</span></div>
+          <div><span class="v">35</span><span class="k">moves to the first push</span></div>
           <div><span class="v">32</span><span class="k">clock at which the win is gone</span></div>
         </div>
       </div>
@@ -445,10 +447,10 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
         <table>
           <thead><tr><th>Pieces</th><th>Tables</th><th>Answers</th></tr></thead>
           <tbody>
-            <tr><td class="n">≤7</td><td>WDL and DTZ</td><td>Win, draw or loss with the 50-move rule, and plies to the next zeroing move</td></tr>
+            <tr><td class="n">≤8</td><td>WDL and DTZ<span class="sub">At 8 pieces: Op1</span></td><td>Win, draw or loss with the 50-move rule, and the distance to the next zeroing move</td></tr>
             <tr><td class="n">≤6</td><td>DTM</td><td>Mate distance without the 50-move rule</td></tr>
             <tr><td class="n">≤6</td><td>DTM50</td><td>Mate distance at every halfmove clock from 0 to 99</td></tr>
-            <tr><td class="n">≤6</td><td>DTC<span class="sub">Endgames with pawns</span></td><td>Pawn pushes still needed before the next capture or promotion, and plies to the next zeroing move</td></tr>
+            <tr><td class="n">≤6</td><td>DTC<span class="sub">Endgames with pawns</span></td><td>Pawn pushes still needed before the next capture or promotion, and the distance to the next zeroing move</td></tr>
           </tbody>
         </table>
       </div>
@@ -456,12 +458,12 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
     </div>
 
     <div class="links">
-      <a class="link-card" href="https://huggingface.co/buckets/noobpwnftw/chesstb" target="_blank" rel="noopener">
+      <a class="link-card" href="https://huggingface.co/buckets/chesstb/chesstb" target="_blank" rel="noopener">
         <span class="k">Download the tables</span>
         <span class="v">Hugging Face</span>
       </a>
-      <a class="link-card" href="https://noobpwnftw-chesstb-explorer.hf.space/" target="_blank" rel="noopener">
-        <span class="k">Probe any position online</span>
+      <a class="link-card" href="https://chesstb-explorer.hf.space/" target="_blank" rel="noopener">
+        <span class="k">Probe positions online</span>
         <span class="v">Explorer</span>
       </a>
       <a class="link-card" href="https://github.com/noobpwnftw/chesstb" target="_blank" rel="noopener">
@@ -712,13 +714,13 @@ td .sub { display: block; font-size: 13px; color: var(--muted); }
   document.querySelectorAll("[data-opt]").forEach(function (b) { b.addEventListener("click", function () { setOpt(b.dataset.opt); }); });
   setOpt("rb1");
 
-  render("b-krpkr2", "8/5r2/3R4/8/6k1/8/1P6/3K4 w", { arrows: [["d6", "d5"]], label: "KRPKR: five pushes needed, the first one 69 plies away. Rd5 is the only winning move." });
+  render("b-krpkr2", "8/5r2/3R4/8/6k1/8/1P6/3K4 w", { arrows: [["d6", "d5"]], label: "KRPKR: five pushes needed, the first one 35 moves away. Rd5 is the only winning move." });
 
   // Explorer links read the caption's current FEN, so they follow the slider and toggles.
   document.querySelectorAll(".explore").forEach(function (link) {
     function update() {
       var fen = link.parentNode.querySelector(".fen").textContent.trim().replace(/\s+/g, " ");
-      link.href = "https://noobpwnftw-chesstb-explorer.hf.space/#fen=" + encodeURIComponent(fen);
+      link.href = "https://chesstb-explorer.hf.space/#fen=" + encodeURIComponent(fen);
     }
     ["mouseenter", "focus", "touchstart", "click"].forEach(function (ev) { link.addEventListener(ev, update, { passive: true }); });
     update();

@@ -64,12 +64,13 @@ def complete(frames):
 
 
 def order(chesstb, names, castling):
-    """Canonical generator order; castling tables follow their right-free counterparts."""
-    enum = subprocess.run([chesstb, "--enumerate", "7"], capture_output=True, text=True).stdout.split()
+    """Canonical generator order; castling tables follow their right-free counterparts,
+    and Op1 tables (blocked pair as lowercase p) rank as their plain-pawn materials."""
+    enum = subprocess.run([chesstb, "--enumerate", "8"], capture_output=True, text=True).stdout.split()
     rank = {n: i for i, n in enumerate(enum)}
 
     def key(name):
-        base = name.replace("r", "R") if castling else name
+        base = (name.replace("r", "R") if castling else name).replace("p", "P")
         return (len(name), rank.get(base, len(rank)), name)
     return sorted(names, key=key)
 
