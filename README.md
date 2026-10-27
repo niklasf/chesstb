@@ -28,6 +28,7 @@ Available mirrors:
 ftp://chessdb:chessdb@ftp.chessdb.cn/pub/chesstb/
 rsync://ftp.chessdb.cn/ftp/pub/chesstb/
 hf://buckets/chesstb/chesstb/
+https://chesstb.lichess.ovh/tables/
 ```
 
 In the table below, `...` means a build is in progress, `---` means a build is
