@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Build docs/stats.json from .info files for the statistics page.
 
-usage: tools/make_stats.py [--chesstb ./chesstb] [--info INFO_DIR] [--out docs/stats.json]
+usage: tools/make_stats.py --sizes bucket-inventory.json [--chesstb ./chesstb] [--info INFO_DIR] [--out docs/stats.json]
 
 INFO_DIR follows the bucket's layout: <metric>/*.info and castling/<metric>/*.info,
 where <metric> is one of dtz, dtm, dtm50, dtc.
+The size inventory is a JSON list of bucket files with path and size fields.
+Only shipping paths are used; each metric size includes its matching WDL file.
 """
 import argparse
 import datetime
@@ -75,13 +77,25 @@ def order(chesstb, names, castling):
     return sorted(names, key=key)
 
 
+def add_sizes(data, inventory):
+    sizes = {item["path"]: item["size"] for item in inventory}
+    for group in data["sets"]:
+        prefix = "castling/" if group["castling"] else ""
+        for row in group["rows"]:
+            row["s"] = {}
+            wdl_size = sizes[f"{prefix}wdl/{row['m']}.lzw"]
+            for metric in row["l"]:
+                path = f"{prefix}{metric}/{row['m']}.lz{metric}"
+                row["s"][metric] = sizes[path] + wdl_size
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--chesstb", default="./chesstb")
     ap.add_argument("--info", default="info")
     ap.add_argument("--out", default="docs/stats.json")
+    ap.add_argument("--sizes", required=True, help="Bucket file inventory JSON (path and size fields)")
     args = ap.parse_args()
-
     sets = []
     for castling in (False, True):
         root = os.path.join(args.info, "castling") if castling else args.info
@@ -111,6 +125,8 @@ def main():
         sets.append({"castling": castling, "metrics": [m for m in METRICS if m in per_metric], "rows": rows})
 
     data = {"generated": datetime.date.today().isoformat(), "sets": sets}
+    with open(args.sizes) as f:
+        add_sizes(data, json.load(f))
     with open(args.out, "w") as f:
         json.dump(data, f, separators=(",", ":"))
     total = sum(len(s["rows"]) for s in sets)

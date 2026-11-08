@@ -1,7 +1,8 @@
 CXX      ?= g++
+CXX_IS_GCC := $(shell $(CXX) -dM -E -x c++ /dev/null | awk '/__GNUC__/ { gcc = 1 } /__clang__/ { clang = 1 } END { print gcc && !clang }')
 
 COMMON_FLAGS ?= -O3 -DNDEBUG -flto=auto -march=native -Wall -Wno-strict-aliasing -Isrc -Ilib
-CXXFLAGS ?= -std=c++17 $(COMMON_FLAGS) -Wno-interference-size -Wno-class-memaccess
+CXXFLAGS ?= -std=c++17 $(COMMON_FLAGS)
 CFLAGS   ?= $(COMMON_FLAGS)
 LDFLAGS  ?= -pthread
 
@@ -22,6 +23,10 @@ E := @:
 endif
 # Suppress the sub-make's Entering/Leaving lines too, but only when quiet.
 NPD := $(if $(Q),--no-print-directory)
+
+ifeq ($(CXX_IS_GCC),1)
+CXXFLAGS += -Wno-interference-size -Wno-class-memaccess
+endif
 
 ifeq ($(shell uname -m),aarch64)
 CXXFLAGS += -mno-outline-atomics
@@ -62,7 +67,9 @@ $(OBJDIR)/%.o: %.c $(LIB_HDRS) Makefile
 	$(E) "  CC      $<"
 	$(Q)$(CXX) $(CFLAGS) -x c -c $< -o $@
 
+ifeq ($(CXX_IS_GCC),1)
 $(OBJDIR)/lib/LZMA/LzmaEnc.o: CFLAGS += -Wno-dangling-pointer
+endif
 
 .PHONY: all tools clean
 all: chesstb shrink transcribe

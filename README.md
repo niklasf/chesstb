@@ -51,10 +51,10 @@ Shipping size breakdown, including castling tables:
 | 5 (Pawnful)  |  159 MiB |  263 MiB | 1.01 GiB | 1.32 GiB | 4.47 GiB |
 | 6 (Pawnless) | 6.88 GiB | 26.9 GiB |      N/A |   53 GiB |  263 GiB |
 | 6 (Pawnful)  | 28.6 GiB | 48.2 GiB |  177 GiB |  246 GiB |  861 GiB |
-| 7 (Pawnless) |  693 GiB | 1.89 TiB |      N/A |      ... |      --- |
-| 7 (Pawnful)  |  3.5 TiB | 5.82 TiB |      --- |      ... |      --- |
+| 7 (Pawnless) |  693 GiB | 1.89 TiB |      N/A | 5.13 TiB |      --- |
+| 7 (Pawnful)  |  3.5 TiB | 5.82 TiB |      --- | 31.8 TiB |      --- |
 | *Total (≤6)* | 35.7 GiB | 75.6 GiB |  178 GiB |  301 GiB |  1.1 TiB |
-| *Total (≤7)* | 4.21 TiB | 7.79 TiB |      --- |      ... |      --- |
+| *Total (≤7)* | 4.21 TiB | 7.79 TiB |      --- | 37.2 TiB |      --- |
 | 8 (Op1)      | 5.83 TiB |  7.6 TiB |      --- |      --- |      --- |
 
 **Tablebase filenames are case-sensitive.** Use a case-sensitive filesystem for

@@ -224,7 +224,6 @@ Child_DTM effective_child_dtm_after_move(Probe_Tables& tables, const Position& p
 DTM_Derived derive_dtm_from_children(Probe_Tables& tables, const Position& pos)
 {
 	bool any_legal = false;
-	bool have = false;
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t best = 0;
 	bool missing = false;
@@ -241,19 +240,16 @@ DTM_Derived derive_dtm_from_children(Probe_Tables& tables, const Position& pos)
 
 		const WDL_Entry my_w = invert_wdl(child.wdl);
 		const uint16_t my_v = static_cast<uint16_t>(child.value + 1);
-		if (!have || prefer_new(my_w, my_v, best_wdl, best))
+		if (prefer_new(my_w, my_v, best_wdl, best))
 		{
 			best_wdl = my_w;
 			best = my_v;
-			have = true;
 		}
 		return false;
 	});
 
 	if (!any_legal)
 		return { pos.is_in_check() ? WDL_Entry::LOSE : WDL_Entry::DRAW, 0, missing };
-	if (!have)
-		return { WDL_Entry::ILLEGAL, 0, true };
 	return { best_wdl, best, missing };
 }
 
@@ -319,7 +315,6 @@ Child_DTZ effective_child_dtz_after_move(Probe_Tables& tables, const Position& p
 DTZ_Derived derive_dtz_from_children(Probe_Tables& tables, const Position& pos)
 {
 	bool any_legal = false;
-	bool have = false;
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t best = 0;
 	bool rounded = false;
@@ -347,19 +342,16 @@ DTZ_Derived derive_dtz_from_children(Probe_Tables& tables, const Position& pos)
 			if (my_w == WDL_Entry::LOSE) my_w = WDL_Entry::BLESSED_LOSS;
 		}
 
-		if (!have || prefer_new(my_w, my_v, best_wdl, best))
+		if (prefer_new(my_w, my_v, best_wdl, best))
 		{
 			best_wdl = my_w;
 			best = my_v;
-			have = true;
 		}
 		return false;
 	});
 
 	if (!any_legal)
 		return { pos.is_in_check() ? WDL_Entry::LOSE : WDL_Entry::DRAW, 0, false, missing };
-	if (!have)
-		return { WDL_Entry::ILLEGAL, 0, false, true };
 	return { best_wdl, best, rounded, missing };
 }
 

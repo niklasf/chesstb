@@ -34,7 +34,7 @@ h1 { font-family: var(--display); font-weight: 400; font-size: clamp(36px, 5vw, 
 .summary { font-family: var(--mono); font-size: 13px; color: var(--muted); padding-block: 4px 12px; margin: 0; font-variant-numeric: tabular-nums; }
 
 .table-wrap { overflow: auto; max-height: 78vh; border: 1px solid var(--rule); border-radius: 10px; background: var(--paper); }
-table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 820px; table-layout: fixed; font-size: 14px; }
+table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 920px; table-layout: fixed; font-size: 14px; }
 th, td { padding: 9px 12px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: middle; white-space: nowrap; }
 thead th { white-space: normal; position: sticky; top: 0; z-index: 1; background: var(--panel); font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 thead th button { all: unset; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; }
@@ -68,7 +68,7 @@ td.long .none { padding-right: 14px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .foot #generated { display: block; }
-.foot { font-size: 13px; color: var(--muted); padding-block: 16px 0; max-width: 80ch; }
+.foot { font-size: 13px; color: var(--muted); padding-block: 16px 0; margin-block: 1em; max-width: 80ch; }
 
 @media (max-width: 640px) {
   body { padding-inline: 16px; }
@@ -124,18 +124,19 @@ td.long .none { padding-right: 14px; }
   <div class="table-wrap">
     <table>
       <colgroup>
-        <col style="width: 12%"><col style="width: 15%"><col style="width: 13%">
-        <col style="width: 10%"><col style="width: 9%"><col style="width: 10%">
-        <col style="width: 15.5%"><col style="width: 15.5%">
+        <col style="width: 10%"><col style="width: 18.5%"><col style="width: 11%">
+        <col style="width: 9%"><col style="width: 9.5%"><col style="width: 9.5%"><col style="width: 9.5%">
+        <col style="width: 11.5%"><col style="width: 11.5%">
       </colgroup>
       <thead>
         <tr class="group">
-          <th colspan="6" class="blank"></th>
+          <th colspan="7" class="blank"></th>
           <th colspan="2" class="grp" scope="colgroup">Longest win</th>
         </tr>
         <tr>
           <th data-key="mat" aria-sort="none"><button type="button">Material</button></th>
           <th class="num" data-key="pos" aria-sort="none"><button type="button">Positions</button></th>
+          <th class="num" data-key="size" aria-sort="none"><button type="button">Size</button></th>
           <th aria-hidden="true"></th>
           <th class="num" data-key="w" aria-sort="none"><button type="button">White wins</button></th>
           <th class="num" data-key="d" aria-sort="none"><button type="button">Draws</button></th>
@@ -152,7 +153,7 @@ td.long .none { padding-right: 14px; }
     <span><i style="background: var(--draw)"></i>Draws</span>
     <span><i style="background: var(--loss)"></i>Black wins</span>
   </div>
-  <p class="foot">Longest wins are in plies. Click a number to open its position in the explorer.<span id="generated"></span></p>
+  <p class="foot">Sizes include WDL. Longest wins are in plies. Click a number to open its position in the explorer.<span id="generated"></span></p>
 </div>
 
 <script>
@@ -182,6 +183,14 @@ td.long .none { padding-right: 14px; }
     if (x > 0 && v < 0.005) return "<0.01%";
     if (x < total && v > 99.995) return ">99.99%";
     return v.toFixed(2) + "%";
+  }
+  function sizeBytes(row) {
+    return row.s[state.metric];
+  }
+  function formatBytes(bytes) {
+    var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"], i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+    return (i ? bytes.toFixed(1) : bytes.toString()) + " " + units[i];
   }
   function fullFen(fen) {
     var f = fen.trim().split(/\s+/), d = ["", "w", "-", "-", "0", "1"];
@@ -239,6 +248,7 @@ td.long .none { padding-right: 14px; }
         switch (k) {
           case "mat": return r.m;
           case "pos": return s.tot;
+          case "size": return sizeBytes(r);
           case "w": return s.tot ? s.w / s.tot : 0;
           case "d": return s.tot ? s.d / s.tot : 0;
           case "b": return s.tot ? s.b / s.tot : 0;
@@ -264,13 +274,16 @@ td.long .none { padding-right: 14px; }
 
   function render() {
     var rows = currentRows();
-    var html = [], total = 0n;
+    var html = [], total = 0n, bytes = 0;
     rows.forEach(function (r) {
       var s = derive(r), l = r.l[state.metric];
       total += BigInt(s.tot);
+      var size = sizeBytes(r);
+      bytes += size;
       var bw = s.tot ? 100 * s.w / s.tot : 0, bd = s.tot ? 100 * s.d / s.tot : 0, bb = s.tot ? 100 * s.b / s.tot : 0;
       html.push("<tr><td class=\"mat\">" + matHtml(r.m) + "</td>" +
         "<td class=\"num\">" + s.tot.toLocaleString("en-US") + "</td>" +
+        '<td class="num" title="' + (size.toLocaleString("en-US") + " bytes") + '">' + formatBytes(size) + "</td>" +
         '<td><div class="bar" title="' + pct(s.w, s.tot) + " / " + pct(s.d, s.tot) + " / " + pct(s.b, s.tot) + '">' +
           '<i class="w" style="width:' + bw + '%"></i><i class="d" style="width:' + bd + '%"></i><i class="l" style="width:' + bb + '%"></i></div></td>' +
         '<td class="num">' + pct(s.w, s.tot) + "</td>" +
@@ -279,9 +292,13 @@ td.long .none { padding-right: 14px; }
         longestCell(l[0]) + longestCell(l[1]) + "</tr>");
     });
     document.getElementById("rows").innerHTML = html.join("") ||
-      '<tr><td colspan="8" class="none">No materials match these filters.</td></tr>';
-    document.getElementById("summary").textContent =
-      rows.length.toLocaleString("en-US") + " materials · " + total.toLocaleString("en-US") + " legal positions";
+      '<tr><td colspan="9" class="none">No materials match these filters.</td></tr>';
+    // Each part stays on one line; the summary only breaks between parts.
+    document.getElementById("summary").innerHTML = [
+      rows.length.toLocaleString("en-US") + " materials",
+      total.toLocaleString("en-US") + " legal positions",
+      formatBytes(bytes)
+    ].map(function (t) { return '<span class="nw">' + t + "</span>"; }).join(" · ");
     document.getElementById("note").textContent = NOTES[state.metric];
     syncControls();
   }
@@ -320,13 +337,11 @@ td.long .none { padding-right: 14px; }
     document.getElementById("q").addEventListener("input", function (e) { state.q = e.target.value; render(); });
     document.querySelectorAll("thead th[data-key] button").forEach(function (b) {
       b.addEventListener("click", function () {
-        var k = b.parentNode.dataset.key;
-        if (state.sort === k) {
-          if (state.dir > 0) state.dir = -1; else { state.sort = null; state.dir = 1; }
-        } else {
-          state.sort = k;
-          state.dir = k === "mat" ? 1 : -1;
-        }
+        // Clicks cycle: the column's natural order (A to Z for material, largest first for numbers), reversed, then unsorted.
+        var k = b.parentNode.dataset.key, first = k === "mat" ? 1 : -1;
+        if (state.sort !== k) { state.sort = k; state.dir = first; }
+        else if (state.dir === first) state.dir = -first;
+        else { state.sort = null; state.dir = 1; }
         render();
       });
     });
@@ -345,7 +360,7 @@ td.long .none { padding-right: 14px; }
   function buildCombined(d) {
     var byName = {};
     var rows = d.sets[0].rows.map(function (r) {
-      var copy = { m: r.m, n: r.n, c: r.c.slice(), l: {} };
+      var copy = { m: r.m, n: r.n, c: r.c.slice(), l: {}, s: Object.assign({}, r.s) };
       Object.keys(r.l).forEach(function (k) { copy.l[k] = [r.l[k][0].slice(), r.l[k][1].slice()]; });
       byName[r.m] = copy;
       return copy;
@@ -356,6 +371,7 @@ td.long .none { padding-right: 14px; }
       for (var i = 0; i < 8; i++) t.c[i] += r.c[i];
       Object.keys(r.l).forEach(function (k) {
         if (!t.l[k]) return;
+        t.s[k] += r.s[k];
         for (var s = 0; s < 2; s++) if (r.l[k][s][0] > t.l[k][s][0]) t.l[k][s] = r.l[k][s].slice();
       });
     });

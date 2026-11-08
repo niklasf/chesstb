@@ -253,8 +253,32 @@ NODISCARD bool layer_busted_by_dtz(WDL_Entry wdl, uint16_t dtz, unsigned rule50)
 	return rule50 + static_cast<unsigned>(dtz) > DTZ_MAX_NON_CURSED;
 }
 
-void fill_pawnless_dtc_from_dtz(In_Out_Param<Probe_Result> r, unsigned rule50)
+void fill_dtm50_from_bounds(In_Out_Param<Probe_Result> r, unsigned rule50)
 {
+	if (rule50 == IGNORE_50MR) return;
+	if (rule50 >= DTM50_HMC_COUNT)
+	{
+		if (r->wdl == WDL_Entry::LOSE && !r->has_dtm) return;
+		r->dtm50_wdl = (r->wdl == WDL_Entry::LOSE && r->dtm == 0)
+			? WDL_Entry::LOSE : WDL_Entry::DRAW;
+	}
+	else if (fold_50mr_wdl(r->wdl) == WDL_Entry::DRAW
+	         || (r->has_dtz && layer_busted_by_dtz(r->wdl, r->dtz, rule50)))
+	{
+		r->dtm50_wdl = WDL_Entry::DRAW;
+	}
+	else if (r->has_dtm && dtm50_layer_pinned_by_dtm(r->wdl, r->dtm, rule50))
+	{
+		r->dtm50_wdl = r->wdl;
+		r->dtm50 = r->dtm;
+	}
+	else return;
+	r->has_dtm50 = true;
+}
+
+void fill_dtc_from_bounds(In_Out_Param<Probe_Result> r, bool has_pawns, unsigned rule50)
+{
+	if (rule50 == IGNORE_50MR) return;
 	const bool clean = r->wdl == WDL_Entry::WIN || r->wdl == WDL_Entry::LOSE;
 	if (!clean)
 	{
@@ -265,6 +289,7 @@ void fill_pawnless_dtc_from_dtz(In_Out_Param<Probe_Result> r, unsigned rule50)
 	if (!r->has_dtz) return;
 
 	const bool busted = r->dtz > dtc_budget_plies(rule50);
+	if (has_pawns && !busted) return;
 	r->has_dtc = true;
 	r->dtc_wdl = busted ? WDL_Entry::DRAW : r->wdl;
 	r->dtc = busted ? 0 : r->dtz;
@@ -346,7 +371,7 @@ struct DTZ_Minimax
 			out.has_dtz = true;
 			return;
 		}
-		if (!have || skipped.unpin(best_wdl)) return;
+		if (skipped.unpin(best_wdl)) return;
 		out.has_dtz = true;
 		out.dtz = (best_wdl == WDL_Entry::DRAW) ? 0 : best_dtz;
 	}
@@ -360,15 +385,13 @@ private:
 			if (my_wdl == WDL_Entry::WIN)  my_wdl = WDL_Entry::CURSED_WIN;
 			if (my_wdl == WDL_Entry::LOSE) my_wdl = WDL_Entry::BLESSED_LOSS;
 		}
-		if (!have || prefer_new(my_wdl, dtz, best_wdl, best_dtz))
+		if (prefer_new(my_wdl, dtz, best_wdl, best_dtz))
 		{
 			best_wdl = my_wdl;
 			best_dtz = dtz;
-			have = true;
 		}
 	}
 
-	bool have = false;
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t best_dtz = 0;
 	Skipped_Children skipped;
@@ -480,7 +503,7 @@ struct Probe_Tables::Impl
 	                                            WDL_Entry wdl, unsigned rule50, int depth);
 	NODISCARD WDL_Entry derive_wdl(const Position& pos, int depth);
 	NODISCARD std::optional<DTZ_Value> derive_dtz(const Position& pos, WDL_Entry wdl, int depth,
-	                                            std::optional<DTZ_Value> stored = std::nullopt);
+	                                            bool zeroing_only = false);
 	NODISCARD std::optional<DTC_Cell> derive_dtc(const Position& pos, WDL_Entry wdl,
 	                                            unsigned rule50, int depth);
 	NODISCARD std::optional<DTC_Cell> child_dtc_cell(const Child_Pos& c, WDL_Entry cw,
@@ -582,10 +605,14 @@ std::optional<DTZ_Value> Probe_Tables::Impl::probe_dtz_internal(
 	const Frame_Read fr = locate_frame(*d, ps, pos, wdl);
 	if (!fr.readable) return derive_dtz(pos, wdl, depth);
 
-	const DTZ_Value stored = fr.mirrored ? d->read(fr.frame, pos.mirror(), wdl)
-	                                     : d->read(fr.frame, pos, wdl);
-	if (!d->is_relaxed[fr.frame] || !is_win_class(wdl)) return stored;
-	return derive_dtz(pos, wdl, depth, stored);
+	if (d->is_relaxed[fr.frame] && is_win_class(wdl))
+	{
+		const auto derived = derive_dtz(pos, wdl, depth, true);
+		if (!derived || derived->dtz == 1) return derived;
+	}
+	if (!fr.mirrored) return d->read(fr.frame, pos, wdl);
+	const Position mp = pos.mirror();
+	return d->read(fr.frame, mp, wdl);
 }
 
 std::optional<DTC_Cell> Probe_Tables::Impl::probe_dtc_internal(
@@ -889,7 +916,6 @@ WDL_Entry Probe_Tables::Impl::derive_wdl(const Position& pos, int depth)
 	if (depth >= MAX_DERIVE_DEPTH) return WDL_Entry::ILLEGAL;
 
 	bool any_legal = false;
-	bool have_candidate = false;
 	WDL_Entry best = WDL_Entry::LOSE;
 	Skipped_Children skipped;
 
@@ -916,12 +942,11 @@ WDL_Entry Probe_Tables::Impl::derive_wdl(const Position& pos, int depth)
 		}
 
 		if (wdl_rank(mw) > wdl_rank(best)) best = mw;
-		have_candidate = true;
 		return best == WDL_Entry::WIN;
 	}))
 		return best;
 	if (!any_legal) return pos.is_in_check() ? WDL_Entry::LOSE : WDL_Entry::DRAW;
-	if (!have_candidate || skipped.unpin(best)) return WDL_Entry::ILLEGAL;
+	if (skipped.unpin(best)) return WDL_Entry::ILLEGAL;
 	return best;
 }
 
@@ -929,12 +954,11 @@ WDL_Entry Probe_Tables::Impl::derive_wdl(const Position& pos, int depth)
 // If none does, use the decoded value. Quiet moves cannot prove this condition,
 // and a missing zeroing child makes the result unknown.
 std::optional<DTZ_Value> Probe_Tables::Impl::derive_dtz(const Position& pos, WDL_Entry wdl, int depth,
-                                                       std::optional<DTZ_Value> stored)
+                                                       bool zeroing_only)
 {
 	if (depth >= MAX_DERIVE_DEPTH) return std::nullopt;
 
 	bool any_legal = false;
-	bool have_candidate = false;
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t best_dtz = 0;
 	bool rounded = false;
@@ -966,7 +990,7 @@ std::optional<DTZ_Value> Probe_Tables::Impl::derive_dtz(const Position& pos, WDL
 		}
 		else
 		{
-			if (stored) return false;
+			if (zeroing_only) return false;
 			if (child_class_is_forced(wdl))
 			{
 				cw = WDL_Entry::WIN;
@@ -990,19 +1014,17 @@ std::optional<DTZ_Value> Probe_Tables::Impl::derive_dtz(const Position& pos, WDL
 			if (my_wdl == WDL_Entry::LOSE) my_wdl = WDL_Entry::BLESSED_LOSS;
 		}
 
-		if (!have_candidate || prefer_new(my_wdl, my_dtz, best_wdl, best_dtz))
+		if (prefer_new(my_wdl, my_dtz, best_wdl, best_dtz))
 		{
 			best_wdl = my_wdl;
 			best_dtz = my_dtz;
-			have_candidate = true;
 		}
 		return is_win_class(wdl) && best_wdl == wdl && best_dtz == 1;
 	}))
 		return DTZ_Value{ best_dtz, false };
-	if (stored) return skipped.unpin(best_wdl) ? std::nullopt : stored;
 	if (!any_legal) return DTZ_Value{ 0, false };
-	if (!have_candidate || skipped.unpin(best_wdl)) return std::nullopt;
-	if (best_wdl == WDL_Entry::DRAW) return DTZ_Value{ 0, false };
+	if (skipped.unpin(best_wdl)) return std::nullopt;
+	if (zeroing_only || best_wdl == WDL_Entry::DRAW) return DTZ_Value{ 0, false };
 	return DTZ_Value{ best_dtz, rounded };
 }
 
@@ -1012,7 +1034,6 @@ std::optional<uint16_t> Probe_Tables::Impl::derive_dtm(const Position& pos, WDL_
 	const WDL_Entry pinned = fold_dtm_wdl(wdl);
 
 	bool any_legal = false;
-	bool have_candidate = false;
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t best_dtm = 0;
 	Skipped_Children skipped;
@@ -1071,18 +1092,16 @@ std::optional<uint16_t> Probe_Tables::Impl::derive_dtm(const Position& pos, WDL_
 		const WDL_Entry my_wdl = invert_wdl(fold_dtm_wdl(cw));
 		const uint16_t my_dtm = static_cast<uint16_t>(1u + cd);
 
-		if (!have_candidate || prefer_new(my_wdl, my_dtm, best_wdl, best_dtm))
+		if (prefer_new(my_wdl, my_dtm, best_wdl, best_dtm))
 		{
 			best_wdl = my_wdl;
 			best_dtm = my_dtm;
-			have_candidate = true;
 		}
 		return is_win_class(pinned) && best_wdl == pinned && best_dtm == 1;
 	}))
 		return best_dtm;
 	if (!any_legal) return 0;
-	if (!have_candidate || skipped.unpin(best_wdl)) return std::nullopt;
-
+	if (skipped.unpin(best_wdl)) return std::nullopt;
 	if (best_wdl == WDL_Entry::WIN || best_wdl == WDL_Entry::LOSE)
 		return best_dtm;
 	return 0;
@@ -1095,7 +1114,6 @@ DTM50_Result Probe_Tables::Impl::derive_dtm50(
 	const WDL_Entry pinned = fold_50mr_wdl(wdl);
 
 	bool any_legal = false;
-	bool have_candidate = false;
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t  best_dtm = 0;
 	Skipped_Children skipped;
@@ -1163,17 +1181,16 @@ DTM50_Result Probe_Tables::Impl::derive_dtm50(
 		const WDL_Entry my_wdl = invert_wdl(fold_50mr_wdl(cd.wdl));
 		const uint16_t my_dtm = static_cast<uint16_t>(1u + static_cast<uint16_t>(cd.dtm));
 
-		if (!have_candidate || prefer_new(my_wdl, my_dtm, best_wdl, best_dtm))
+		if (prefer_new(my_wdl, my_dtm, best_wdl, best_dtm))
 		{
 			best_wdl = my_wdl;
 			best_dtm = my_dtm;
-			have_candidate = true;
 		}
 		return is_win_class(pinned) && best_wdl == pinned && best_dtm == 1;
 	}))
 		return { best_wdl, best_dtm };
 	if (!any_legal) return { pos.is_in_check() ? WDL_Entry::LOSE : WDL_Entry::DRAW, 0 };
-	if (!have_candidate || skipped.unpin(best_wdl)) return {};
+	if (skipped.unpin(best_wdl)) return {};
 	if (best_wdl == WDL_Entry::WIN || best_wdl == WDL_Entry::LOSE) return { best_wdl, best_dtm };
 	return { WDL_Entry::DRAW, 0 };
 }
@@ -1184,7 +1201,6 @@ DTM50_Result Probe_Tables::Impl::derive_dtm50_flat(const Position& pos, WDL_Entr
 	const WDL_Entry pinned = fold_dtm_wdl(wdl);
 
 	bool any_legal = false;
-	bool have_candidate = false;
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t  best_dtm = 0;
 	DTZ_Minimax dtz;
@@ -1254,11 +1270,10 @@ DTM50_Result Probe_Tables::Impl::derive_dtm50_flat(const Position& pos, WDL_Entr
 		const WDL_Entry my_wdl = invert_wdl(fold_dtm_wdl(cw));
 		const uint16_t my_dtm = static_cast<uint16_t>(1u + cd);
 
-		if (!have_candidate || prefer_new(my_wdl, my_dtm, best_wdl, best_dtm))
+		if (prefer_new(my_wdl, my_dtm, best_wdl, best_dtm))
 		{
 			best_wdl = my_wdl;
 			best_dtm = my_dtm;
-			have_candidate = true;
 		}
 		return false;
 	});
@@ -1268,13 +1283,12 @@ DTM50_Result Probe_Tables::Impl::derive_dtm50_flat(const Position& pos, WDL_Entr
 	{
 		out.wdl = pos.is_in_check() ? WDL_Entry::LOSE : WDL_Entry::DRAW;
 	}
-	else if (have_candidate && !skipped.unpin(best_wdl))
+	else if (!skipped.unpin(best_wdl))
 	{
 		const bool decisive = best_wdl == WDL_Entry::WIN || best_wdl == WDL_Entry::LOSE;
 		out.wdl = decisive ? best_wdl : WDL_Entry::DRAW;
 		out.dtm = decisive ? best_dtm : 0;
 	}
-
 	dtz.finish(out, any_legal);
 	return out;
 }
@@ -1289,6 +1303,7 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 	const bool rule50_drawn = rule50 != IGNORE_50MR && rule50 >= DTM50_HMC_COUNT;
 	r.wdl = probe_wdl_internal(w, ps, pos, depth);
 	if (r.wdl == WDL_Entry::ILLEGAL) return r;
+	DTM50_File* m50 = r.wdl == WDL_Entry::DRAW ? nullptr : open_dtm50(ps);
 	if (r.wdl == WDL_Entry::DRAW)
 	{
 		r.has_dtm = true;
@@ -1301,49 +1316,21 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 			r.has_dtm50 = true;
 		}
 	}
-	else if (DTM50_File* m50 = open_dtm50(ps))
+	else if (m50)
 	{
 		const DTM50_Result d50 = probe_dtm50_internal(m50, ps, pos, r.wdl, IGNORE_50MR, depth);
 		r.dtm = d50.dtm;
 		r.has_dtm = d50.wdl != WDL_Entry::ILLEGAL;
 		r.dtz = d50.dtz;
 		r.has_dtz = d50.has_dtz;
-		if (!ps.has_pawns() && rule50 != IGNORE_50MR)
-			fill_pawnless_dtc_from_dtz(inout_param(r), rule50);
-		if (rule50_drawn)
+		fill_dtc_from_bounds(inout_param(r), ps.has_pawns(), rule50);
+		fill_dtm50_from_bounds(inout_param(r), rule50);
+		if (!r.has_dtm50 && rule50 < DTM50_HMC_COUNT)
 		{
-			if (r.has_dtm || r.wdl != WDL_Entry::LOSE)
-			{
-				r.dtm50_wdl = (r.wdl == WDL_Entry::LOSE && r.dtm == 0)
-					? WDL_Entry::LOSE : WDL_Entry::DRAW;
-				r.has_dtm50 = true;
-			}
-		}
-		else if (rule50 != IGNORE_50MR)
-		{
-			if (fold_50mr_wdl(r.wdl) == WDL_Entry::DRAW)
-			{
-				r.dtm50_wdl = WDL_Entry::DRAW;
-				r.has_dtm50 = true;
-			}
-			else if (r.has_dtm && dtm50_layer_pinned_by_dtm(r.wdl, r.dtm, rule50))
-			{
-				r.dtm50_wdl = r.wdl;
-				r.dtm50 = r.dtm;
-				r.has_dtm50 = true;
-			}
-			else if (layer_busted_by_dtz(r.wdl, r.dtz, rule50))
-			{
-				r.dtm50_wdl = WDL_Entry::DRAW;
-				r.has_dtm50 = true;
-			}
-			else
-			{
-				const DTM50_Result d50r = probe_dtm50_internal(m50, ps, pos, r.wdl, rule50, depth);
-				r.dtm50_wdl = d50r.wdl;
-				r.dtm50 = d50r.dtm;
-				r.has_dtm50 = d50r.wdl != WDL_Entry::ILLEGAL;
-			}
+			const DTM50_Result d50r = probe_dtm50_internal(m50, ps, pos, r.wdl, rule50, depth);
+			r.dtm50_wdl = d50r.wdl;
+			r.dtm50 = d50r.dtm;
+			r.has_dtm50 = d50r.wdl != WDL_Entry::ILLEGAL;
 		}
 	}
 	else if (DTM_File* m = open_dtm(ps))
@@ -1355,7 +1342,7 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 		}
 	}
 
-	if (r.wdl != WDL_Entry::DRAW && !r.has_dtc && ps.has_pawns())
+	if (r.wdl != WDL_Entry::DRAW && (!r.has_dtc || !r.has_dtz) && ps.has_pawns())
 		if (DTC_File* c = open_dtc(ps))
 			if (const auto cell = probe_dtc_internal(c, ps, pos, r.wdl, rule50, depth))
 			{
@@ -1381,8 +1368,11 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 				r.has_dtz = true;
 			}
 
-	if (!r.has_dtc && !ps.has_pawns() && rule50 != IGNORE_50MR)
-		fill_pawnless_dtc_from_dtz(inout_param(r), rule50);
+	if (!r.has_dtc)
+		fill_dtc_from_bounds(inout_param(r), ps.has_pawns(), rule50);
+
+	if (!r.has_dtm50)
+		fill_dtm50_from_bounds(inout_param(r), rule50);
 
 	if (ep_square == SQ_END || r.wdl == WDL_Entry::ILLEGAL)
 		return r;

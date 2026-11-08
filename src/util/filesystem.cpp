@@ -11,7 +11,7 @@
 
 #include <Windows.h>
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -43,7 +43,7 @@ bool Positional_Output_File::create(const char* file_name)
 
 	return m_handle != sys_common::INVALID_HANDLE_VALUE;
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 
 	m_handle = open(file_name, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, (mode_t)0644);
 
@@ -84,7 +84,7 @@ bool Positional_Output_File::write_at(uint64_t offset, Const_Span<uint8_t> data)
 
 	return true;
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 
 	while (left != 0)
 	{
@@ -119,7 +119,7 @@ void Positional_Output_File::close_file()
 
 #if defined(OS_WINDOWS)
 	CloseHandle(m_handle);
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 	close(m_handle);
 #else
 #error "Unsupported OS"
@@ -161,7 +161,7 @@ bool Memory_Mapped_File::open_readonly(const char* file_name)
 
 	return true;
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 
 	struct stat statbuf;
 	m_handle = open(file_name, O_RDONLY);
@@ -205,7 +205,7 @@ void Memory_Mapped_File::close_file()
 		m_handle = sys_common::INVALID_HANDLE_VALUE;
 	}
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 
 	if (m_data != nullptr)
 	{

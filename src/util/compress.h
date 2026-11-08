@@ -54,13 +54,13 @@ private:
 	// Spill backing; active iff m_path is set.
 	std::vector<uint64_t> m_offsets;
 	std::vector<uint64_t> m_sizes;
-	std::atomic<uint64_t> m_total_size{0};  // also the append position of the next block
+	std::atomic<uint64_t> m_total_size{ 0 };  // also the append position of the next block
 	Temporary_File_Tracker m_tmp_files;
 	std::filesystem::path m_path;
 	mutable Positional_Output_File m_out;
 	static constexpr size_t WRITES_CLOSED = size_t{1} << (sizeof(size_t) * CHAR_BIT - 1);
-	mutable std::atomic<size_t> m_writer_state{0};  // high bit = closed; remainder = writes in flight
-	mutable std::atomic<bool> m_finalized{false};
+	mutable std::atomic<size_t> m_writer_state{ 0 };  // high bit = closed; remainder = writes in flight
+	mutable std::atomic<bool> m_finalized{ false };
 	mutable Memory_Mapped_File m_map{ Memory_Mapped_File::Access_Advice::SEQUENTIAL };
 	mutable std::mutex m_mutex;
 

@@ -14,6 +14,12 @@
 #include <malloc.h>
 #include <sys/mman.h>
 
+#elif defined(OS_MACOS)
+
+#include <cstdlib>
+#include <malloc/malloc.h>
+#include <sys/mman.h>
+
 #else
 
 #error "Unsupported OS"
@@ -66,7 +72,7 @@ NODISCARD void* allocate_large_pages(size_t bytes)
 	const size_t allocation_size = ceil_to_multiple(bytes, large_page_size);
 	return VirtualAlloc(nullptr, allocation_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 
 	if (bytes == 0)
 		return nullptr;
@@ -76,7 +82,9 @@ NODISCARD void* allocate_large_pages(size_t bytes)
 	                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (ptr == MAP_FAILED)
 		return nullptr;
+#if defined(OS_LINUX)
 	madvise(ptr, allocation_size, MADV_HUGEPAGE);
+#endif
 	return ptr;
 #else
 
@@ -93,7 +101,7 @@ void deallocate_large_pages(void* ptr, size_t bytes)
 	if (ptr != nullptr)
 		VirtualFree(ptr, 0, MEM_RELEASE);
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MACOS)
 
 	if (ptr != nullptr)
 		munmap(ptr, large_page_bytes(bytes));
@@ -114,6 +122,10 @@ void release_unused_heap_memory()
 #elif defined(OS_LINUX)
 
 	malloc_trim(0);
+
+#elif defined(OS_MACOS)
+
+	malloc_zone_pressure_relief(nullptr, 0);
 
 #else
 

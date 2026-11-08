@@ -1,4 +1,5 @@
 #include "chess/bitboard.h"
+#include "chess/pawn_slice_bits.h"
 #include "chess/chess.h"
 #include "chess/pair_group.h"
 
@@ -63,78 +64,36 @@ Pawn_Slice_Manager::Pawn_Slice_Manager(const Pair_Group* pair,
 		}
 	};
 	std::vector<Piece_Group::Placement> white_pl, black_pl;
-	std::vector<Bitboard> white_occ, black_occ, pair_occ;
+	std::vector<Bitboard> white_occ, black_occ;
 	placements_of(m_white_group, white_pl, white_occ);
 	placements_of(m_black_group, black_pl, black_occ);
-	if (m_pair_group)
-		for (size_t i = 0; i < m_pair_table_size; ++i)
-			pair_occ.push_back(square_bb(m_pair_group->white_square(static_cast<Pair_Group::Index>(i)))
-			                 | square_bb(m_pair_group->black_square(static_cast<Pair_Group::Index>(i))));
-	else
-		pair_occ.push_back(Bitboard::make_empty());
 
-	// The designated pair of a cell must be the canonical opposing pair over all
-	// its pawns, or the cell is a duplicate of the one that designates that pair.
-	auto pair_is_canonical = [&](size_t p, size_t w, size_t b) -> bool {
-		const auto pi = static_cast<Pair_Group::Index>(p);
-		const Square pair_w = m_pair_group->white_square(pi);
-		const Square pair_b = m_pair_group->black_square(pi);
-		Square wsq[Piece_Group::MAX_PIECE_GROUP_SIZE + 1];
-		Square bsq[Piece_Group::MAX_PIECE_GROUP_SIZE + 1];
-		size_t nw = 0, nb = 0;
-		wsq[nw++] = pair_w;
-		bsq[nb++] = pair_b;
-		for (const Square s : white_pl[w]) wsq[nw++] = s;
-		for (const Square s : black_pl[b]) bsq[nb++] = s;
-		Square cw = SQ_END, cb = SQ_END;
-		Pair_Group::canonical_pair(Const_Span<Square>(wsq, nw),
-		                           Const_Span<Square>(bsq, nb), cw, cb);
-		return cw == pair_w && cb == pair_b;
-	};
-
-	// Mark the cells that earn a storage id, skipping overlap (unreachable) cells
-	// and cells whose designated pair is not the canonical one. Storage ids are
-	// ranks in ascending cartesian order, so the walk has to follow that order:
-	// the pair digit is least significant, then white, then black.
+	// The bitmap is shared by rank (compose) and the reverse storage map.
+	// Build it by bitsets, then enumerate its set bits once in storage order.
 	m_rank_blocks.assign((m_num_cartesian_slices + 63) / 64, Rank_Block{});
-	m_cartesian_by_storage.clear();
-	if (m_pair_group == nullptr && m_white_group != nullptr && m_black_group != nullptr)
-		m_cartesian_by_storage.reserve(
-			m_black_table_size * binomial(possible_sq_nb(WHITE_PAWN) - m_black_group->size(),
-			                              m_white_group->size()));
-	else
-		m_cartesian_by_storage.reserve(m_num_cartesian_slices);
-
-	size_t cart = 0;
-	for (size_t b = 0; b < m_black_table_size; ++b)
-	{
-		for (size_t w = 0; w < m_white_table_size; ++w)
-		{
-			if (white_occ[w] & black_occ[b])
-			{
-				cart += m_pair_table_size;
-				continue;
-			}
-			const Bitboard free_occ = white_occ[w] | black_occ[b];
-			for (size_t p = 0; p < m_pair_table_size; ++p, ++cart)
-			{
-				if (pair_occ[p] & free_occ) continue;
-				if (m_pair_group && !pair_is_canonical(p, w, b)) continue;
-				m_rank_blocks[cart >> 6].bits |= uint64_t{1} << (cart & 63);
-				m_cartesian_by_storage.push_back(static_cast<int32_t>(cart));
-			}
-		}
-	}
-	ASSERT(cart == m_num_cartesian_slices);
-	m_num_slices = m_cartesian_by_storage.size();
-
+	m_num_slices = 0;
+	build_pawn_slice_bits(pair, white_pl, black_pl, white_occ, black_occ,
+		[&](size_t cart, uint64_t bits) {
+			if (!bits) return;
+			m_num_slices += popcnt(bits);
+			const size_t word = cart >> 6, shift = cart & 63;
+			m_rank_blocks[word].bits |= bits << shift;
+			if (shift && word + 1 < m_rank_blocks.size())
+				m_rank_blocks[word + 1].bits |= bits >> (64 - shift);
+		});
+	m_cartesian_by_storage.reserve(m_num_slices);
 	int32_t running = 0;
-	for (Rank_Block& blk : m_rank_blocks)
+	for (size_t word = 0; word < m_rank_blocks.size(); ++word)
 	{
-		blk.survivors_before = running;
-		running += static_cast<int32_t>(popcnt(blk.bits));
+		Rank_Block& block = m_rank_blocks[word];
+		block.survivors_before = running;
+		running += static_cast<int32_t>(popcnt(block.bits));
+		uint64_t bits = block.bits;
+		while (bits)
+			m_cartesian_by_storage.push_back(static_cast<int32_t>(word * 64 + pop_first_bit(bits)));
 	}
 	ASSERT(static_cast<size_t>(running) == m_num_slices);
+	ASSERT(m_cartesian_by_storage.size() == m_num_slices);
 }
 
 std::vector<std::vector<int32_t>> Pawn_Slice_Manager::Topo_Batch_Builder::operator()() const
