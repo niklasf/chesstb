@@ -50,10 +50,9 @@ void WDL_Traits::parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
 }
 
 void WDL_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-                          const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB],
-                          const Fixed_Vector<Color, 2>& table_colors)
+                          const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB])
 {
-	for (Color i : table_colors)
+	for (Color i : { WHITE, BLACK })
 	{
 		if (is_singular[i] || is_dropped[i]) continue;
 		Per_Color& pc = per_color[i];
@@ -65,7 +64,7 @@ void WDL_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[C
 		}
 	}
 
-	for (Color i : table_colors)
+	for (Color i : { WHITE, BLACK })
 	{
 		if (is_singular[i] || is_dropped[i]) continue;
 		Per_Color& pc = per_color[i];
@@ -81,7 +80,7 @@ void WDL_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[C
 		                           log2_bu, sample_width, offset_width);
 	}
 
-	for (Color i : table_colors)
+	for (Color i : { WHITE, BLACK })
 	{
 		if (is_singular[i] || is_dropped[i]) continue;
 		Per_Color& pc = per_color[i];
@@ -90,7 +89,7 @@ void WDL_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[C
 		reader.advance(pc.data_size);
 	}
 
-	for (Color i : table_colors)
+	for (Color i : { WHITE, BLACK })
 	{
 		if (is_singular[i] || is_dropped[i]) continue;
 		Per_Color& pc = per_color[i];

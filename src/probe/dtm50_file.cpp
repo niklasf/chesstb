@@ -40,10 +40,9 @@ void DTM50_Traits::parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
 }
 
 void DTM50_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-                            const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB],
-                            const Fixed_Vector<Color, 2>& table_colors)
+                            const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB])
 {
-	for (Color i : table_colors)
+	for (Color i : { WHITE, BLACK })
 	{
 		if (is_singular[i] || is_dropped[i]) continue;
 		Per_Color& pc = per_color[i];
@@ -62,7 +61,7 @@ void DTM50_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)
 		                           log2_bu, sample_width, offset_width);
 		pc.usizes = Min0_Uint_Vec(usz_ptr, pc.block_cnt, usz_width);
 	}
-	for (Color i : table_colors)
+	for (Color i : { WHITE, BLACK })
 	{
 		if (is_singular[i] || is_dropped[i]) continue;
 		reader.align(64);

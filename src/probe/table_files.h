@@ -45,9 +45,15 @@ NODISCARD INLINE unsigned dtc_budget_plies(unsigned rule50)
 	return (rule50 >= DTZ_MAX_NON_CURSED) ? 0u : DTZ_MAX_NON_CURSED - rule50;
 }
 
-struct WDL_Per_Color : Block_Cache
+// Composition avoids GCC PGO misinferring the derived object size from
+// a Block_Cache base (-Warray-bounds).
+struct WDL_Per_Color
 {
-	using Block_Cache::Block_Cache;
+	explicit WDL_Per_Color(std::shared_ptr<Block_Pool> pool = default_block_pool()) :
+		cache(std::move(pool))
+	{}
+
+	Block_Cache cache;
 
 	Index_Storage_Layout layout;
 	size_t block_size = 0;
@@ -63,9 +69,13 @@ struct WDL_Per_Color : Block_Cache
 	const uint8_t* lp_dict = nullptr;
 };
 
-struct LZMA_Rank_Per_Color : Block_Cache
+struct LZMA_Rank_Per_Color
 {
-	using Block_Cache::Block_Cache;
+	explicit LZMA_Rank_Per_Color(std::shared_ptr<Block_Pool> pool = default_block_pool()) :
+		cache(std::move(pool))
+	{}
+
+	Block_Cache cache;
 
 	Index_Storage_Layout layout;
 	size_t entry_bytes = 0;
@@ -106,9 +116,13 @@ NODISCARD INLINE uint16_t lzma_rank_value(const LZMA_Rank_Per_Color& pc,
 	return pc.rank_to_value[rank];
 }
 
-struct Layered_Rank_Per_Color : Block_Cache
+struct Layered_Rank_Per_Color
 {
-	using Block_Cache::Block_Cache;
+	explicit Layered_Rank_Per_Color(std::shared_ptr<Block_Pool> pool = default_block_pool()) :
+		cache(std::move(pool))
+	{}
+
+	Block_Cache cache;
 
 	Index_Storage_Layout layout;
 	size_t entry_bytes = 0;
@@ -194,11 +208,14 @@ void Table_File<Traits>::load(const Piece_Config& ps, const std::filesystem::pat
 		throw std::runtime_error(std::string("Wrong material key in ") + Traits::NAME + " " + path.string());
 	index_cfg = std::make_unique<Position_Index_Config>(ps);
 
+	// Frames stored: WHITE, and BLACK unless the material is symmetric (1).
 	const size_t table_num = key_and_table_num & 3;
-	const Fixed_Vector<Color, 2> table_colors = egtb_table_colors(table_num);
+	if (table_num == 0 || table_num > COLOR_NB)
+		throw std::runtime_error(std::string("Invalid table count in ") + Traits::NAME + " " + path.string());
 
-	for (Color i : table_colors)
+	for (size_t c = 0; c < table_num; ++c)
 	{
+		const Color i = static_cast<Color>(c);
 		const uint8_t flag = reader.read<uint8_t>();
 		is_loss_only[i] = (flag & LOSS_ONLY_FLAG) != 0;
 		is_relaxed[i] = (flag & RELAXED_FLAG) != 0;
@@ -224,7 +241,7 @@ void Table_File<Traits>::load(const Piece_Config& ps, const std::filesystem::pat
 		is_relaxed[BLACK] = is_relaxed[WHITE];
 	}
 
-	Traits::finalize(reader, per_color, is_singular, is_dropped, table_colors);
+	Traits::finalize(reader, per_color, is_singular, is_dropped);
 }
 
 NODISCARD constexpr WDL_Stored get_wdl_value(Packed_WDL_Entries packed, size_t pos)
@@ -245,8 +262,7 @@ struct WDL_Traits
 	                         const Position_Index_Config& index_cfg,
 	                         const std::filesystem::path& path);
 	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB],
-	                     const Fixed_Vector<Color, 2>& table_colors);
+	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static WDL_Stored read(Per_Color& pc, bool is_singular, Board_Index pos);
 };
 
@@ -277,8 +293,7 @@ struct DTZ_Traits
 	                         const Position_Index_Config& index_cfg,
 	                         const std::filesystem::path& path);
 	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB],
-	                     const Fixed_Vector<Color, 2>& table_colors);
+	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static DTZ_Value read(Per_Color& pc, bool is_singular, Board_Index pos, WDL_Entry wdl);
 };
 
@@ -309,8 +324,7 @@ struct DTC_Traits
 	                         const Position_Index_Config& index_cfg,
 	                         const std::filesystem::path& path);
 	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB],
-	                     const Fixed_Vector<Color, 2>& table_colors);
+	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static DTC_Cell read(Per_Color& pc, bool is_singular, Board_Index pos,
 	                               WDL_Entry wdl, unsigned rule50);
 	static void read_curve(Per_Color& pc, bool is_singular, Board_Index pos,
@@ -343,8 +357,7 @@ struct DTM_Traits
 	                         const Position_Index_Config& index_cfg,
 	                         const std::filesystem::path& path);
 	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB],
-	                     const Fixed_Vector<Color, 2>& table_colors);
+	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static uint16_t read(Per_Color& pc, bool is_singular, Board_Index pos, WDL_Entry wdl);
 };
 
@@ -383,8 +396,7 @@ struct DTM50_Traits
 	                         const Position_Index_Config& index_cfg,
 	                         const std::filesystem::path& path);
 	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB],
-	                     const Fixed_Vector<Color, 2>& table_colors);
+	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static DTM50_Cell read(Per_Color& pc, bool is_singular, Board_Index pos,
 	                                 WDL_Entry wdl, unsigned hmc);
 };

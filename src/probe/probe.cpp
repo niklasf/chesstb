@@ -295,6 +295,15 @@ void fill_dtc_from_bounds(In_Out_Param<Probe_Result> r, bool has_pawns, unsigned
 	r->dtc = busted ? 0 : r->dtz;
 }
 
+void fill_wdl50(In_Out_Param<Probe_Result> r, unsigned rule50)
+{
+	if (rule50 == IGNORE_50MR || r->wdl == WDL_Entry::ILLEGAL) return;
+	if (fold_50mr_wdl(r->wdl) == WDL_Entry::DRAW) r->wdl50 = WDL_Entry::DRAW;
+	else if (r->has_dtz) r->wdl50 = layer_busted_by_dtz(r->wdl, r->dtz, rule50) ? WDL_Entry::DRAW : r->wdl;
+	else return;
+	r->has_wdl50 = true;
+}
+
 struct Child_Pos { Position pos; Piece_Config ps; Square ep; bool is_zeroing; };
 
 NODISCARD bool child_class_is_forced(WDL_Entry pinned)
@@ -1374,6 +1383,8 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 	if (!r.has_dtm50)
 		fill_dtm50_from_bounds(inout_param(r), rule50);
 
+	fill_wdl50(inout_param(r), rule50);
+
 	if (ep_square == SQ_END || r.wdl == WDL_Entry::ILLEGAL)
 		return r;
 
@@ -1539,6 +1550,10 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 	}))
 		return {};
 	if (!any_ep) return r;
+	// An en-passant capture may have replaced the class and DTZ; drop the
+	// verdict copied from r before deciding again.
+	best.has_wdl50 = false;
+	fill_wdl50(inout_param(best), rule50);
 	return best;
 }
 
@@ -1928,10 +1943,11 @@ int zeroing_signed_dtz(WDL_Entry my_wdl)
 // 900 plies keeps its side of the draw rank; equal ranks sort by dtz.
 int fathom_dtz_rank(int v, unsigned cnt50, bool has_repeated)
 {
-	if (v > 0) return (static_cast<int>(v + cnt50) <= 100 && !has_repeated)
-		? 1000 : std::max(1, 1000 - static_cast<int>(v + cnt50));
-	if (v < 0) return (-v * 2 + static_cast<int>(cnt50) < 100)
-		? -1000 : std::min(-1, -1000 + static_cast<int>(-v + cnt50));
+	const int clock = static_cast<int>(cnt50);
+	if (v > 0) return (v + clock <= 100 && !has_repeated)
+		? 1000 : std::max(1, 1000 - (v + clock));
+	if (v < 0) return (-v * 2 + clock < 100)
+		? -1000 : std::min(-1, -1000 + (-v + clock));
 	return 0;
 }
 
@@ -2009,9 +2025,11 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 		int rank = fathom_dtz_rank(v, use_rule50 ? rule50 : 0u, has_repeated);
 
 		const bool conversion = m.is_promotion() || probe_pos.move_is_capture(m);
+		// A push to mate is preferred at any budget.
+		const bool mate = c.pos.is_checkmate(c.ep);
 		int order = -1;
 		int wait = 0;
-		if (conversion && (my_wdl == WDL_Entry::WIN || my_wdl == WDL_Entry::LOSE))
+		if ((conversion || mate) && (my_wdl == WDL_Entry::WIN || my_wdl == WDL_Entry::LOSE))
 		{
 			order = 0;
 			wait = 1;
@@ -2059,7 +2077,7 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 std::vector<Root_Move> Probe_Tables::probe_root_wdl(
 	const Position& pos, Square ep_square, bool use_rule50)
 {
-	// Fathom WdlToRank/WdlToValue, indexed by v + 2 from side-to-move POV.
+	// Fathom WdlToRank/WdlToValue, indexed by wdl_rank from side-to-move POV.
 	static constexpr int WdlToRank[]  = { -1000, -899, 0, 899, 1000 };
 	static constexpr int WdlToValue[] = {
 		-TB_VALUE_MATE + TB_MAX_MATE_PLY + 1,
@@ -2069,16 +2087,6 @@ std::vector<Root_Move> Probe_Tables::probe_root_wdl(
 		 TB_VALUE_MATE - TB_MAX_MATE_PLY - 1
 	};
 
-	auto wdl_to_v = [](WDL_Entry w) -> int {
-		switch (w) {
-			case WDL_Entry::WIN:          return  2;
-			case WDL_Entry::CURSED_WIN:   return  1;
-			case WDL_Entry::DRAW:         return  0;
-			case WDL_Entry::BLESSED_LOSS: return -1;
-			case WDL_Entry::LOSE:         return -2;
-			default:                      return  0;
-		}
-	};
 
 	std::vector<Root_Move> out;
 	const Canonical_Root root = canonical_root_from_position(pos, ep_square);
@@ -2094,10 +2102,10 @@ std::vector<Root_Move> Probe_Tables::probe_root_wdl(
 			return true;
 
 		const WDL_Entry my_wdl = invert_wdl(cw);
-		int v = wdl_to_v(my_wdl);
-		if (!use_rule50) v = v > 0 ? 2 : v < 0 ? -2 : 0;
+		const WDL_Entry ranked_wdl = use_rule50 ? my_wdl : fold_dtm_wdl(my_wdl);
+		const int index = wdl_rank(ranked_wdl);
 
-		Root_Move r{root.mirrored ? rank_mirror_move(m) : m, my_wdl, 0, WdlToRank[v + 2], WdlToValue[v + 2]};
+		Root_Move r{root.mirrored ? rank_mirror_move(m) : m, my_wdl, 0, WdlToRank[index], WdlToValue[index]};
 		out.push_back(r);
 		return false;
 	};

@@ -3,7 +3,6 @@
 #include "chess/chess.h"
 
 #include "util/defines.h"
-#include "util/fixed_vector.h"
 
 #include <cstdint>
 
@@ -59,13 +58,3 @@ inline constexpr size_t WDL_ENTRY_BITS = 4;
 inline constexpr uint16_t DTZ_MAX_NON_CURSED = 100;
 // No 50-move clock: the probe ignores the 50-move rule.
 inline constexpr unsigned IGNORE_50MR = ~0u;
-
-NODISCARD INLINE Fixed_Vector<Color, 2> egtb_table_colors(size_t table_num)
-{
-	ASSERT(table_num <= COLOR_NB);
-	Fixed_Vector<Color, 2> r;
-	r.emplace_back(WHITE);
-	if (table_num == 2) r.emplace_back(BLACK);
-	return r;
-}
-

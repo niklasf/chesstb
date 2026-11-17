@@ -247,15 +247,21 @@ NODISCARD TL_Block_FIFO<Tag::TL_BLOCK_SLOTS>& tl_block_fifo(uint64_t key)
 	}
 }
 
+INLINE const Block_Cache& block_cache(const Block_Cache& cache) { return cache; }
+
+template <typename Cache>
+const Block_Cache& block_cache(const Cache& cache) { return cache.cache; }
+
 template <typename Tag, bool Thread_Local_Only = false, typename Cache, typename Build>
 const uint8_t* fetch_block_cached(Cache& cache, size_t block_id, Build&& build)
 {
-	const uint64_t key = cache.epoch ^ block_id;
+	const Block_Cache& blocks = block_cache(cache);
+	const uint64_t key = blocks.epoch ^ block_id;
 	auto& tl = tl_block_fifo<Tag, Thread_Local_Only>(key);
 	for (size_t n = 1; n <= tl.slots; ++n)
 	{
 		const size_t i = (tl.next - n) & (tl.slots - 1);
-		if (tl.epoch[i] == cache.epoch && tl.block_id[i] == block_id)
+		if (tl.epoch[i] == blocks.epoch && tl.block_id[i] == block_id)
 			return tl.bytes[i]->data();
 	}
 
@@ -264,14 +270,14 @@ const uint8_t* fetch_block_cached(Cache& cache, size_t block_id, Build&& build)
 		blk = build(cache, block_id);
 	else
 	{
-		blk = cache.pool->find(cache.pool_key(), block_id, key);
+		blk = blocks.pool->find(blocks.pool_key(), block_id, key);
 		if (!blk)
-			blk = cache.pool->try_insert_or_get(
-				cache.pool_key(), block_id, key, build(cache, block_id));
+			blk = blocks.pool->try_insert_or_get(
+				blocks.pool_key(), block_id, key, build(cache, block_id));
 	}
 
 	const size_t s = (tl.next++) & (tl.slots - 1);
-	tl.epoch[s]    = cache.epoch;
+	tl.epoch[s]    = blocks.epoch;
 	tl.block_id[s] = block_id;
 	tl.bytes[s]    = blk;
 	return blk->data();

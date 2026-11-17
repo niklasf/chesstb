@@ -30,6 +30,8 @@ struct Probe_Result
 	bool has_dtz = false;
 	uint16_t dtz = 0;
 	bool dtz_rounded = false;
+	bool has_wdl50 = false;
+	WDL_Entry wdl50 = WDL_Entry::ILLEGAL;
 	bool has_dtc = false;
 	WDL_Entry dtc_wdl = WDL_Entry::ILLEGAL;
 	uint16_t dtc_order = 0;
@@ -76,14 +78,15 @@ struct Probe_Tables
 	void rescan();
 
 	// Budget (bytes) for decoded blocks held across this instance's tables,
-	// reclaimed least-recently-used. Safe to call while probes are running.
+	// reclaimed by a sharded second-chance clock. Safe to call while probes are running.
 	void set_block_cache_bytes(size_t bytes);
 	NODISCARD size_t block_cache_bytes() const;
 	NODISCARD size_t block_cache_bytes_used() const;
 
 	// rule50 is the halfmove clock; it selects the DTM50 layer and the DTC
-	// budget. IGNORE_50MR reads the unbounded values instead. has_dtm50 and
-	// has_dtc stay false where no file answers; callers can ignore either field.
+	// budget, and decides wdl50 when available. IGNORE_50MR reads the unbounded
+	// values instead. has_dtm50 and has_dtc stay false where no file answers;
+	// callers can ignore either field.
 	NODISCARD Probe_Result probe(const Position& pos, unsigned rule50);
 	NODISCARD Probe_Result probe(const Position& pos, Square ep_square, unsigned rule50);
 	NODISCARD Probe_Result probe(const Piece_Config& ps, const Position& pos, unsigned rule50);

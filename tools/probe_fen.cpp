@@ -156,6 +156,7 @@ void print_probe_result(const Probe_Result& r, const char* prefix)
 	}
 	std::printf("%swdl=%s", prefix, wdl_name(r.wdl));
 	if (r.has_dtz) std::printf(" dtz=%s%u", r.dtz_rounded ? "~" : "", static_cast<unsigned>(r.dtz));
+	if (r.has_wdl50) std::printf(" wdl50=%s", wdl_name(r.wdl50));
 	if (r.has_dtc)
 		std::printf(" dtc=%s/%u/%u", wdl_name(r.dtc_wdl),
 			static_cast<unsigned>(r.dtc_order), static_cast<unsigned>(r.dtc));
