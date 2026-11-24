@@ -70,13 +70,10 @@ struct Pawn_Slice_Manager
                               Piece_Group::Placement_Index w,
                               Piece_Group::Placement_Index b) const;
 
-    // Reverse lookup from a board. `pair_white_sq` / `pair_black_sq` give the
-    // pair members (SQ_END for both when there is no pair); the free-pawn spans
-    // must EXCLUDE those two squares.
-    NODISCARD int32_t lookup_from_squares(
-        Square pair_white_sq, Square pair_black_sq,
-        Const_Span<Square> white_pawn_squares,
-        Const_Span<Square> black_pawn_squares) const;
+    // Reverse lookup from a board: the pair's squares (SQ_END for both
+    // without one) and each side's other pawns.
+    NODISCARD int32_t lookup(Square pair_white_sq, Square pair_black_sq,
+                             Bitboard white, Bitboard black) const;
 
     NODISCARD int32_t slice_after_pawn_push(
         int32_t slice_id, Color mover, Square from, Square to) const;

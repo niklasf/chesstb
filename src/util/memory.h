@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "endian.h"
 #include "filesystem.h"
 #include "span.h"
 #include "utility.h"
@@ -184,10 +185,9 @@ struct Serial_Memory_Reader
 	template <typename T>
 	NODISCARD T read()
 	{
-		T val;
-		ASSERT(m_caret + sizeof(val) <= m_end);
-		std::memcpy(&val, m_caret, sizeof(val));
-		m_caret += sizeof(val);
+		ASSERT(m_caret + sizeof(T) <= m_end);
+		const T val = read_le<T>(m_caret);
+		m_caret += sizeof(T);
 		return val;
 	}
 
@@ -202,7 +202,7 @@ struct Serial_Memory_Reader
 	{
 		if (std::distance(m_begin, m_end) < 8)
 			return false;
-		const uint64_t crc = reinterpret_cast<const uint64_t*>(m_end - 8)[0];
+		const uint64_t crc = read_le<uint64_t>(m_end - 8);
 		return XXH64(m_begin, std::distance(m_begin, m_end) - 8, init) == crc;
 	}
 

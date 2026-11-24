@@ -19,13 +19,7 @@
 
 struct Probe_Result
 {
-	enum struct Status : uint8_t
-	{
-		OK,
-		TB_NOT_FOUND,
-	};
-
-	Status status = Status::TB_NOT_FOUND;
+	// ILLEGAL: the tables can't answer (a table it needs isn't available).
 	WDL_Entry wdl = WDL_Entry::ILLEGAL;
 	bool has_dtz = false;
 	uint16_t dtz = 0;
@@ -43,12 +37,12 @@ struct Probe_Result
 	uint16_t dtm50 = 0;
 };
 
-// Ranked legal move. Fields mirror Fathom's TbRootMove.
+// Ranked legal move.
 struct Root_Move
 {
 	Move      move;
 	WDL_Entry wdl   = WDL_Entry::DRAW;
-	int       dtz   = 0;   // +N means side-to-move wins in N plies
+	int       dtz   = 0;   // signed plies behind the rank (+ wins)
 	int       rank  = 0;
 	int       score = 0;
 };
@@ -83,20 +77,17 @@ struct Probe_Tables
 	NODISCARD size_t block_cache_bytes() const;
 	NODISCARD size_t block_cache_bytes_used() const;
 
-	// rule50 is the halfmove clock; it selects the DTM50 layer and the DTC
-	// budget, and decides wdl50 when available. IGNORE_50MR reads the unbounded
-	// values instead. has_dtm50 and has_dtc stay false where no file answers;
-	// callers can ignore either field.
-	NODISCARD Probe_Result probe(const Position& pos, unsigned rule50);
+	// rule50 is the halfmove clock: it picks the DTM50 layer and the DTC budget
+	// and decides wdl50. has_* is false wherever a field can't be determined.
 	NODISCARD Probe_Result probe(const Position& pos, Square ep_square, unsigned rule50);
-	NODISCARD Probe_Result probe(const Piece_Config& ps, const Position& pos, unsigned rule50);
-	NODISCARD Probe_Result probe(const Piece_Config& ps, const Position& pos, Square ep_square, unsigned rule50);
 
-	// Search-time WDL probe. Fathom semantics reject nonzero rule50.
+	// Search-time WDL probe. The class holds at clock 0 only: a nonzero rule50
+	// returns ILLEGAL.
 	NODISCARD WDL_Entry probe_wdl(const Position& pos, Square ep_square, unsigned rule50);
-	NODISCARD WDL_Entry probe_wdl(const Piece_Config& ps, const Position& pos, Square ep_square, unsigned rule50);
 
-	// Root rankers using Fathom tbRank/tbScore ordering. Empty on partial failure.
+	// Root rankers: legal moves best first, each valued at the clock it leaves,
+	// so past clock 100 a zeroing move or mate still decides. Empty on partial
+	// failure.
 	NODISCARD std::vector<Root_Move> probe_root_dtz(
 		const Position& pos, Square ep_square,
 		unsigned rule50, bool use_rule50, bool has_repeated);

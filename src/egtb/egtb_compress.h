@@ -54,12 +54,6 @@ struct Layered_Rank_Table : Value_Rank_Table
 
 	Layered_Rank_Table() { value_to_rank.assign(LUT_SIZE, NO_RANK); }
 
-	NODISCARD uint16_t rank_of(uint16_t value) const
-	{
-		ASSERT(value < LUT_SIZE);
-		ASSERT(value_to_rank[value] != NO_RANK);
-		return value_to_rank[value];
-	}
 };
 
 INLINE void write_rank_bytes(std::vector<uint8_t>& dst, uint16_t r, uint8_t eb)
@@ -71,7 +65,6 @@ INLINE void write_rank_bytes(std::vector<uint8_t>& dst, uint16_t r, uint8_t eb)
 		dst.push_back(static_cast<uint8_t>(r >> 8));
 	}
 }
-
 
 // Per-position state across the pack layers: 00=CONST, 01=SINGLE (1 transition),
 // 10=DOUBLE (2), 11=MULTI (3+). ILLEGAL is folded into CONST as last_legal_rank

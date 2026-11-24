@@ -3,7 +3,7 @@
 #include "chess/chess.h"
 #include "chess/piece_config.h"
 
-#include "util/compress.h"
+#include "util/decompress.h"
 #include "util/memory.h"
 
 #include <cstdint>
@@ -29,18 +29,19 @@ Block_Ptr wdl_get_block(WDL_Per_Color& pc, size_t block_id)
 
 }  // namespace
 
-void WDL_Traits::on_singular(Serial_Memory_Reader& reader, Per_Color& pc)
+bool WDL_Traits::on_singular(Serial_Memory_Reader& reader, Per_Color& pc)
 {
 	pc.single_val = static_cast<WDL_Stored>(reader.read<uint8_t>());
+	return true;
 }
 
 void WDL_Traits::parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
                               const Position_Index_Config& index_cfg,
-                              const std::filesystem::path&)
+                              const std::filesystem::path& path)
 {
 	const uint32_t perm = reader.read<uint32_t>();
 	if (!index_permutation_config_is_valid(index_cfg, perm))
-		throw std::runtime_error("Invalid WDL index permutation config");
+		throw std::runtime_error("Invalid index permutation config " + path.string());
 	pc.layout = make_index_storage_layout(index_cfg, perm);
 
 	pc.tail_size   = reader.read<uint16_t>();
@@ -55,13 +56,10 @@ void WDL_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[C
 	for (Color i : { WHITE, BLACK })
 	{
 		if (is_singular[i] || is_dropped[i]) continue;
-		Per_Color& pc = per_color[i];
-		pc.dict_size = reader.read<uint16_t>();
-		if (pc.dict_size != 0)
-		{
-			pc.lp_dict = reader.caret();
-			reader.advance(pc.dict_size);
-		}
+		const size_t dict_size = reader.read<uint16_t>();
+		const uint8_t* dict = reader.caret();
+		reader.advance(dict_size);
+		per_color[i].dict = Const_Span<uint8_t>(dict, dict_size);
 	}
 
 	for (Color i : { WHITE, BLACK })
@@ -88,20 +86,13 @@ void WDL_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[C
 		pc.compressed_data = reader.caret();
 		reader.advance(pc.data_size);
 	}
-
-	for (Color i : { WHITE, BLACK })
-	{
-		if (is_singular[i] || is_dropped[i]) continue;
-		Per_Color& pc = per_color[i];
-		pc.dict = LZ4_Dict::load(Const_Span(pc.lp_dict, pc.lp_dict + pc.dict_size));
-	}
 }
 
 WDL_Stored WDL_Traits::read(Per_Color& pc, bool is_singular, Board_Index pos)
 {
 	if (is_singular) return pc.single_val;
 
-	const size_t packed_byte = static_cast<size_t>(pos) / WDL_ENTRY_PACK_RATIO;
+	const size_t packed_byte = static_cast<size_t>(pos / WDL_ENTRY_PACK_RATIO);
 	const size_t block_id    = packed_byte / pc.block_size;
 	const size_t in_block    = packed_byte % pc.block_size;
 
@@ -110,11 +101,11 @@ WDL_Stored WDL_Traits::read(Per_Color& pc, bool is_singular, Board_Index pos)
 		return WDL_Stored::ILLEGAL;
 
 	const uint8_t* point_index = fetch_block_cached<WDL_Traits, true>(pc, block_id, wdl_get_block);
-	const Packed_WDL_Entries entry = static_cast<Packed_WDL_Entries>(lz4_point_read(
+	const uint8_t entry = lz4_point_read(
 		Const_Span<uint8_t>(pc.compressed_data + pair[0], pair[1] - pair[0]),
-		Const_Span<uint8_t>(pc.dict.data(), pc.dict.size()),
-		point_index, in_block));
-	return get_wdl_value(entry, static_cast<size_t>(pos) % WDL_ENTRY_PACK_RATIO);
+		pc.dict,
+		point_index, in_block);
+	return get_wdl_value(entry, static_cast<size_t>(pos % WDL_ENTRY_PACK_RATIO));
 }
 
 template struct Table_File<WDL_Traits>;

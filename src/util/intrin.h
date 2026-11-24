@@ -2,7 +2,15 @@
 
 #include "defines.h"
 
+#include <cstdint>
 #include <utility>
+
+#if defined(__BMI2__)
+  #include <immintrin.h>
+  #define CHESSTB_HAVE_PEXT 1
+#else
+  #define CHESSTB_HAVE_PEXT 0
+#endif
 
 NODISCARD INLINE size_t lsb(uint64_t b)
 {
@@ -39,6 +47,19 @@ NODISCARD INLINE size_t popcnt(uint64_t b)
 	return __builtin_popcountll(b);
 #else
 	return (int)__popcnt64(b);
+#endif
+}
+
+// mask's set bits, lowest first, taking b's low bits in turn (BMI2 pdep).
+NODISCARD INLINE uint64_t pdep_u64(uint64_t b, uint64_t mask)
+{
+#if CHESSTB_HAVE_PEXT
+	return _pdep_u64(b, mask);
+#else
+	uint64_t r = 0;
+	for (uint64_t bit = 1; mask; bit += bit, mask &= mask - 1)
+		if (b & bit) r |= mask & (0 - mask);
+	return r;
 #endif
 }
 

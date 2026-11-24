@@ -161,7 +161,6 @@ NODISCARD In_Out_Param<T> Optional_In_Out_Param<T>::as_mandatory() const
 	return In_Out_Param<T>(*Base_Type::m_ptr);
 }
 
-
 template <typename T>
 NODISCARD In_Out_Param<T> inout_param(T& v)
 {

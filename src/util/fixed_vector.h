@@ -259,10 +259,6 @@ public:
         return CAPACITY;
     }
 
-    void reserve(size_type n)
-    {
-    }
-
     void clear()
     {
         for (size_type i = 0; i < m_size; ++i)

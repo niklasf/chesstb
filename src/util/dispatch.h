@@ -11,8 +11,8 @@ struct Template_Dispatch {
 
     Template_Dispatch() = delete;
 
-    Template_Dispatch(T value) :
-        value(value)
+    Template_Dispatch(T v) :
+        value(v)
     {
     }
 

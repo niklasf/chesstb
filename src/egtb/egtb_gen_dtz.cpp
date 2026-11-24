@@ -761,9 +761,9 @@ bool DTZ_Generator::run_iter_impl(In_Out_Param<Thread_Pool> thread_pool,
 void DTZ_Generator::iterate(In_Out_Param<Thread_Pool> thread_pool, bool pending_cursed,
                             Iter_Phase start_phase, uint16_t finished_ply)
 {
-	auto check_interrupt = [this](Iter_Phase phase, bool pending_cursed, uint16_t fp) {
+	auto check_interrupt = [this](Iter_Phase phase, bool cursed, uint16_t fp) {
 		if (egtb_is_interrupt_requested(true))
-			throw DTZ_Interrupted{ static_cast<uint8_t>(phase), pending_cursed, fp, m_max_dtz };
+			throw DTZ_Interrupted{ static_cast<uint8_t>(phase), cursed, fp, m_max_dtz };
 	};
 
 	auto iter_continues = [this](bool wrote_w, bool wrote_b, uint16_t ply) {

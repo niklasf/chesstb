@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chess/bitboard.h"
 #include "chess/castling_group.h"
 #include "chess/pair_group.h"
 #include "chess/chess.h"
@@ -20,9 +21,9 @@
 #include <utility>
 #include <vector>
 
-enum Board_Index : size_t {
+enum Board_Index : uint64_t {
 	BOARD_INDEX_ZERO = 0,
-	BOARD_INDEX_NONE = std::numeric_limits<size_t>::max()
+	BOARD_INDEX_NONE = std::numeric_limits<uint64_t>::max()
 };
 
 enum struct Symmetry_Group : uint8_t {
@@ -31,106 +32,18 @@ enum struct Symmetry_Group : uint8_t {
 	DIHEDRAL_8,
 };
 
-enum struct Symmetry_Transform : uint8_t {
-	IDENTITY       = 0,
-	FILE           = 1,
-	RANK           = 2,
-	FILE_RANK      = 3,
-	DIAG           = 4,
-	FILE_DIAG      = 5,
-	RANK_DIAG      = 6,
-	FILE_RANK_DIAG = 7
-};
-
 struct Piece_Group
 {
 	static constexpr size_t MAX_PIECE_GROUP_SIZE = 7;
 
 	using Placement_Index = uint32_t;
 
-	struct alignas(8) Placement
-	{
-		Placement() : m_size(0) {}
-
-		template <typename F>
-		NODISCARD Placement with_transformed_squares(F&& f) const
-		{
-			Placement dst;
-			dst.m_size = m_size;
-			for (size_t i = 0; i < static_cast<size_t>(m_size); ++i)
-				dst.m_squares[i] = f(m_squares[i]);
-			dst.sort();
-			return dst;
-		}
-
-		INLINE void add(Square s)
-		{
-			ASSERT(static_cast<size_t>(m_size) < MAX_PIECE_GROUP_SIZE);
-			size_t i = m_size;
-			while (i > 0 && m_squares[i - 1] > s)
-			{
-				m_squares[i] = m_squares[i - 1];
-				--i;
-			}
-			m_squares[i] = s;
-			m_size += 1;
-		}
-
-		INLINE void add_unsorted(Square s)
-		{
-			ASSERT(static_cast<size_t>(m_size) < MAX_PIECE_GROUP_SIZE);
-			m_squares[m_size++] = s;
-		}
-
-		INLINE void clear() { m_size = 0; }
-
-		// Lift one square out, keeping the rest in order: how a castling rook
-		// leaves its color's rook class, which indexes only the free ones. A
-		// square that is not here is left alone rather than driving m_size
-		// negative -- see the generator's copy.
-		INLINE void remove_square(Square s)
-		{
-			const size_t n = static_cast<size_t>(m_size);
-			size_t i = 0;
-			while (i < n && m_squares[i] != s) ++i;
-			if (i == n) return;
-			for (; i + 1 < n; ++i) m_squares[i] = m_squares[i + 1];
-			m_size -= 1;
-		}
-
-		INLINE void sort()
-		{
-			for (size_t i = 1; i < static_cast<size_t>(m_size); ++i)
-			{
-				const Square v = m_squares[i];
-				size_t j = i;
-				while (j > 0 && m_squares[j - 1] > v)
-				{
-					m_squares[j] = m_squares[j - 1];
-					--j;
-				}
-				m_squares[j] = v;
-			}
-		}
-
-		NODISCARD INLINE Square operator[](size_t i) const
-		{
-			ASSERT(i < static_cast<size_t>(m_size));
-			return m_squares[i];
-		}
-
-		NODISCARD INLINE size_t size() const { return m_size; }
-		NODISCARD INLINE const Square* begin() const { return m_squares; }
-
-	private:
-		Square m_squares[MAX_PIECE_GROUP_SIZE];
-		int8_t m_size;
-	};
-
 	Piece_Group(Piece pc, size_t count);
 
-	NODISCARD Placement_Index compound_index(const Placement& list) const;
-	NODISCARD Placement squares(Placement_Index idx) const;
+	// Colex rank of the pieces on `b`; the legal squares run on from the first.
+	NODISCARD Placement_Index index_of(Bitboard b) const;
+	// The pieces of placement `idx`.
+	NODISCARD Bitboard squares(Placement_Index idx) const;
 
 	NODISCARD size_t table_size() const { return m_table_size; }
 	NODISCARD size_t size() const { return m_num_pieces; }
@@ -140,13 +53,11 @@ private:
 	Piece m_piece;
 	size_t m_num_pieces;
 	size_t m_num_legal_squares;
+	Square m_first_square;
 	uint32_t m_table_size;
-
-	int8_t m_sq_to_pos[SQUARE_NB];
-	Square m_pos_to_sq[SQUARE_NB];
 };
 
-
+#ifdef CHESSTB_INDEX_INVERSE
 using Within_Slice_Index = std::array<Piece_Group::Placement_Index, PIECE_CLASS_NB>;
 
 struct Decomposed_Board_Index
@@ -155,39 +66,41 @@ struct Decomposed_Board_Index
 	int32_t king_slice_id;
 	Within_Slice_Index within;
 };
+#endif
 
 inline constexpr int32_t SLICE_NONE = -1;
 
 struct King_Slice_Manager
 {
-	Symmetry_Group sym;
-	size_t num_slices;
+	size_t num_slices = 0;
 
 	struct Pair_Lookup
 	{
 		int32_t slice_id;
-		Symmetry_Transform transform;
+		// Bits: 1 mirrors files, 2 ranks, 4 then the a1-h8 diagonal.
+		uint8_t transform;
 		uint8_t has_diag_stabilizer;
 	};
 
 	std::array<Pair_Lookup, SQUARE_NB * SQUARE_NB> pair_lookup{};
+#ifdef CHESSTB_INDEX_INVERSE
 	std::vector<std::pair<Square, Square>> kings_of_slice;
+#endif
 
 	// Castling managers only. Must enumerate exactly as the generator's does --
 	// the slice ids are on disk. Both sides share Castling_Group for that reason,
 	// so only this loop is duplicated, not the placement order.
 	bool has_castling = false;
 	std::array<size_t, COLOR_NB> castling_rights{ 0, 0 };
-	using Slice_Rooks = std::array<std::array<Square, Castling_Group::MAX_RIGHTS>, COLOR_NB>;
+#ifdef CHESSTB_INDEX_INVERSE
+	using Slice_Rooks = std::array<Bitboard, COLOR_NB>;
 	std::vector<Slice_Rooks> castling_rooks_of_slice;
-	std::vector<Castling_Group::Index> castling_index_of_slice;
+#endif
 	std::vector<int32_t> castling_slice_lookup;
 
 	explicit King_Slice_Manager(Symmetry_Group s);
-	King_Slice_Manager(Symmetry_Group s, size_t white_rights, size_t black_rights);
-
-	NODISCARD const Castling_Group& castling_group() const { return *m_castling_group; }
-	NODISCARD bool both_kings_pinned() const { return m_castling_group->both_kings_pinned(); }
+	// Castling: no symmetry.
+	King_Slice_Manager(size_t white_rights, size_t black_rights);
 
 	NODISCARD const Pair_Lookup& lookup(Square wk, Square bk) const
 	{
@@ -195,36 +108,36 @@ struct King_Slice_Manager
 		return pair_lookup[static_cast<int>(wk) * SQUARE_NB + static_cast<int>(bk)];
 	}
 
+	// Slice for a castling material, given both kings and each side's castling
+	// rooks; SLICE_NONE if they are not on their home rank or not a placement
+	// of the rights.
 	NODISCARD int32_t castling_slice_of(Square wk, Square bk,
-	                                  Const_Span<Square> white_rooks,
-	                                  Const_Span<Square> black_rooks) const
+	                                  Bitboard white_rooks, Bitboard black_rooks) const
 	{
 		ASSERT(has_castling);
 		const Square king_sq[COLOR_NB] = { wk, bk };
-		const Const_Span<Square>* rooks[COLOR_NB] = { &white_rooks, &black_rooks };
+		const Bitboard rooks[COLOR_NB] = { white_rooks, black_rooks };
 
-		File rook_files[COLOR_NB][Castling_Group::MAX_RIGHTS];
 		File king_file[COLOR_NB] = { FILE_END, FILE_END };
+		uint8_t rook_mask[COLOR_NB] = { 0, 0 };
 		for (const Color c : { WHITE, BLACK })
 		{
-			if (rooks[c]->size() != castling_rights[c]) return SLICE_NONE;
-			if (castling_rights[c] == 0) continue;
-			const Rank home = castling_home_rank(c);
-			if (sq_rank(king_sq[c]) != home) return SLICE_NONE;
-			king_file[c] = sq_file(king_sq[c]);
-			for (size_t i = 0; i < rooks[c]->size(); ++i)
+			if (castling_rights[c] == 0)
 			{
-				if (sq_rank((*rooks[c])[i]) != home) return SLICE_NONE;
-				rook_files[c][i] = sq_file((*rooks[c])[i]);
+				if (rooks[c]) return SLICE_NONE;
+				continue;
 			}
+			const Rank home = castling_home_rank(c);
+			if (sq_rank(king_sq[c]) != home || (rooks[c] & ~home)) return SLICE_NONE;
+			king_file[c] = sq_file(king_sq[c]);
+			rook_mask[c] = static_cast<uint8_t>(rooks[c].bits() >> (8 * home));
 		}
 
 		const Castling_Group::Index ci = m_castling_group->index_of(
-			king_file[WHITE], Const_Span<File>(rook_files[WHITE], castling_rights[WHITE]),
-			king_file[BLACK], Const_Span<File>(rook_files[BLACK], castling_rights[BLACK]));
+			king_file[WHITE], rook_mask[WHITE], king_file[BLACK], rook_mask[BLACK]);
 		if (ci == Castling_Group::INDEX_NONE) return SLICE_NONE;
 
-		const size_t free_slot = both_kings_pinned()
+		const size_t free_slot = m_castling_group->both_kings_pinned()
 			? size_t(0)
 			: static_cast<size_t>(king_sq[castling_rights[WHITE] == 0 ? WHITE : BLACK]);
 		return castling_slice_lookup[static_cast<size_t>(ci) * m_free_king_stride + free_slot];
@@ -237,31 +150,25 @@ private:
 
 inline constexpr size_t MAX_TOTAL_PAWNS = 6;
 
+// Depends on the pawns only: the opposing pair and each side's other pawns.
 struct Pawn_Slice_Manager
 {
-	Pawn_Slice_Manager(const Pair_Group* pair,
-	                   const Piece_Group* white_pawns,
-	                   const Piece_Group* black_pawns);
+	Pawn_Slice_Manager(bool has_pair, size_t white_pawns, size_t black_pawns);
+
+	Pawn_Slice_Manager(const Pawn_Slice_Manager&) = delete;
+	Pawn_Slice_Manager& operator=(const Pawn_Slice_Manager&) = delete;
 
 	NODISCARD size_t num_slices() const { return m_num_slices; }
 	NODISCARD bool has_pawns() const { return m_has_pawns; }
-	NODISCARD bool has_pair() const { return m_pair_group != nullptr; }
 
-	struct Decomposed
-	{
-		Pair_Group::Index            pair_idx;
-		Piece_Group::Placement_Index white_idx;
-		Piece_Group::Placement_Index black_idx;
-	};
-
-	NODISCARD Decomposed decompose(int32_t slice_id) const;
-	NODISCARD int32_t compose(Pair_Group::Index pair,
-	                          Piece_Group::Placement_Index w,
-	                          Piece_Group::Placement_Index b) const;
-	NODISCARD int32_t lookup_from_squares(
-		Square pair_white_sq, Square pair_black_sq,
-		Const_Span<Square> white_pawn_squares,
-		Const_Span<Square> black_pawn_squares) const;
+#ifdef CHESSTB_INDEX_INVERSE
+	// Index -> position is for the tools only, which define CHESSTB_INDEX_INVERSE:
+	// each side's pawns in `slice_id`, the pair's included.
+	void pawns_of(int32_t slice_id, Bitboard& white, Bitboard& black) const;
+#endif
+	// The pair's squares (unused without one) and each side's other pawns.
+	NODISCARD int32_t lookup(Square pair_white_sq, Square pair_black_sq,
+	                         Bitboard white, Bitboard black) const;
 
 private:
 	struct Rank_Block
@@ -288,16 +195,22 @@ private:
 	size_t m_pair_table_size = 1;
 	size_t m_white_table_size = 1;
 	size_t m_black_table_size = 1;
+	size_t m_white_free_size = 1;  // without a pair: white's placements per black one
+	std::vector<Rank_Block> m_rank_blocks;
+#ifdef CHESSTB_INDEX_INVERSE
 	Divider<uint64_t> m_pair_table_size_div{};
 	Divider<uint64_t> m_white_table_size_div{};
+	std::vector<int32_t> m_cartesian_by_storage;
+#endif
 
-	std::vector<Rank_Block> m_rank_blocks;
-	std::vector<int32_t>    m_cartesian_by_storage;
-
-	const Pair_Group*  m_pair_group  = nullptr;
-	const Piece_Group* m_white_group = nullptr;
-	const Piece_Group* m_black_group = nullptr;
+	std::unique_ptr<const Pair_Group>  m_pair_group;
+	std::unique_ptr<const Piece_Group> m_white_group;
+	std::unique_ptr<const Piece_Group> m_black_group;
 };
+
+// The manager for these pawns, built once and shared by every material that
+// has them.
+NODISCARD const Pawn_Slice_Manager& pawn_slice_mgr(bool has_pair, size_t white_pawns, size_t black_pawns);
 
 struct Index_Storage_Layout
 {
@@ -327,7 +240,7 @@ NODISCARD Index_Storage_Layout make_index_storage_layout(
 struct Position_Index_Config : public Piece_Config
 {
 private:
-	static constexpr size_t MAX_NUM_POSITIONS = 0xffffffffffffull;
+	static constexpr uint64_t MAX_NUM_POSITIONS = 0xffffffffffffull;
 
 	NODISCARD static Symmetry_Group pick_symmetry(const Piece_Config& ps)
 	{
@@ -349,19 +262,22 @@ public:
 	Position_Index_Config(Position_Index_Config&&) = default;
 	Position_Index_Config& operator=(Position_Index_Config&&) = default;
 
-	NODISCARD size_t num_positions() const { return m_num_positions; }
+#ifdef CHESSTB_INDEX_INVERSE
+	NODISCARD uint64_t num_positions() const { return m_num_positions; }
+#endif
+	NODISCARD uint64_t pawn_slice_stride() const { return m_pawn_slice_stride; }
 	NODISCARD size_t within_slice_size() const { return m_within_slice_size; }
 	NODISCARD const King_Slice_Manager& king_slice_manager() const { return *m_king_slice_manager; }
 	NODISCARD const Pawn_Slice_Manager& pawn_slice_manager() const { return *m_pawn_slice_manager; }
-	NODISCARD const Pair_Group* pair_group() const { return m_pair_group.get(); }
 
-	// Squares one side's castling rooks stand on in `slice`, ascending by file.
-	NODISCARD Const_Span<Square> castling_rook_squares(int32_t king_slice_id, Color c) const
+#ifdef CHESSTB_INDEX_INVERSE
+	// One side's castling rooks in `slice`.
+	NODISCARD Bitboard castling_rooks(int32_t king_slice_id, Color c) const
 	{
 		ASSERT(has_castling());
-		const auto& rooks = m_king_slice_manager->castling_rooks_of_slice[king_slice_id][c];
-		return Const_Span<Square>(rooks.data(), castling_rights(c));
+		return m_king_slice_manager->castling_rooks_of_slice[king_slice_id][c];
 	}
+#endif
 
 	NODISCARD const Piece_Group& group(Piece_Class c) const
 	{
@@ -374,43 +290,31 @@ public:
 	NODISCARD size_t num_populated_classes() const { return m_num_populated_classes; }
 	NODISCARD size_t weight(Piece_Class c) const { return m_weights[c]; }
 
-	NODISCARD Board_Index compose_board_index(
-		const Decomposed_Board_Index& idx,
-		const Index_Storage_Layout& layout) const
-	{
-		size_t within = 0;
-		size_t w = 1;
-		for (size_t i = 0; i < layout.n; ++i)
-		{
-			within += w * static_cast<size_t>(idx.within[layout.order[i]]);
-			w *= layout.radix[i];
-		}
-		const size_t outer = static_cast<size_t>(idx.pawn_slice_id) * m_pawn_slice_stride
-		                   + static_cast<size_t>(idx.king_slice_id) * m_within_slice_size;
-		return static_cast<Board_Index>(outer + within);
-	}
-
+#ifdef CHESSTB_INDEX_INVERSE
 	bool fill_board(const Decomposed_Board_Index& index, Out_Param<Position> board) const;
 
 	void decompose_board_index(Board_Index pos, Out_Param<Decomposed_Board_Index> idx) const;
+#endif
 
 private:
 	const King_Slice_Manager* m_king_slice_manager = nullptr;
-	std::unique_ptr<Pawn_Slice_Manager> m_pawn_slice_manager;
-	std::unique_ptr<Pair_Group> m_pair_group;  // null unless this material has 'p'
+	const Pawn_Slice_Manager* m_pawn_slice_manager = nullptr;
 
 	size_t m_num_pawn_slices = 1;
-	size_t m_pawn_slice_stride = 0;
+	uint64_t m_pawn_slice_stride = 0;
 	size_t m_within_slice_size = 0;
-	size_t m_num_positions = 0;
+#ifdef CHESSTB_INDEX_INVERSE
+	uint64_t m_num_positions = 0;
+#endif
 
 	size_t m_num_populated_classes = 0;
 	Piece_Class m_populated_classes[PIECE_CLASS_NB]{};
 
-	std::unique_ptr<Piece_Group> m_groups_owned[PIECE_CLASS_NB];
-	const Piece_Group* m_groups[PIECE_CLASS_NB]{};
+	std::unique_ptr<const Piece_Group> m_groups[PIECE_CLASS_NB];
 	size_t m_weights[PIECE_CLASS_NB]{};
+#ifdef CHESSTB_INDEX_INVERSE
 	int8_t m_piece_counts_cached[PIECE_NB]{};
+#endif
 };
 
 NODISCARD Board_Index board_index_of_position(
@@ -418,6 +322,8 @@ NODISCARD Board_Index board_index_of_position(
 	const Index_Storage_Layout& layout,
 	const Position& pos);
 
+#ifdef CHESSTB_INDEX_INVERSE
 NODISCARD bool position_from_index(
 	const Position_Index_Config& cfg, Board_Index idx, Color turn,
 	Out_Param<Position> pos);
+#endif

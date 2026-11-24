@@ -10,6 +10,7 @@
 
 #include "util/cache.h"
 #include "util/compress.h"
+#include "util/decompress.h"
 #include "util/defines.h"
 #include "util/memory.h"
 #include "util/mono_uint_vec.h"
@@ -261,9 +262,8 @@ NODISCARD INLINE std::optional<uint16_t> rank_encoded_stored(
 			ASSERT(dsz != 0);
 
 			auto buf = std::make_shared<std::vector<uint8_t>>(decode_sz, 0);
-			lzma_decompress_into(
-				Span<uint8_t>(buf->data(), decode_sz),
-				Const_Span<uint8_t>(pc.compressed_data + doff, dsz));
+			if (!lzma_decode(buf->data(), decode_sz, pc.compressed_data + doff, dsz))
+				print_and_abort("LZMA error when trying to decompress a block.\n");
 			return buf;
 		});
 
@@ -775,7 +775,7 @@ struct DTM50_File_For_Probe : public Table_Reader<DTM50_Final_Entry>
 				Block_Cache&, size_t key) -> Block_Ptr
 		{
 			const size_t bid = key / (HMC_COUNT + 1);
-			const uint16_t layer = static_cast<uint16_t>(key % (HMC_COUNT + 1));
+			const uint16_t key_layer = static_cast<uint16_t>(key % (HMC_COUNT + 1));
 			const size_t positions =
 				(bid == pc.block_cnt - 1 && pc.tail_positions != 0)
 				? pc.tail_positions
@@ -789,14 +789,13 @@ struct DTM50_File_For_Probe : public Table_Reader<DTM50_Final_Entry>
 			ASSERT(dsz != 0);
 
 			const size_t usz = pc.usizes.get(bid);
-			const Span<uint8_t> scratch = decompress_scratch(usz);
-			lzma_decompress_into(
-				scratch,
-				Const_Span<uint8_t>(pc.compressed_data + doff, dsz));
+			Span<uint8_t> scratch = decompress_scratch(usz);
+			if (!lzma_decode(scratch.data(), usz, pc.compressed_data + doff, dsz))
+				print_and_abort("LZMA error when trying to decompress a block.\n");
 
 			layered_decode_column<DTM50_MULTI_BITMAP_BYTES>(
 				scratch.data(), positions, pc.entry_bytes, pc.rank_to_value,
-				layer, DRAWN_AT_LAYER, reinterpret_cast<uint16_t*>(buf->data()));
+				key_layer, DRAWN_AT_LAYER, reinterpret_cast<uint16_t*>(buf->data()));
 			return buf;
 		});
 
@@ -908,10 +907,9 @@ struct DTC_File_For_Probe : public Table_Reader<DTC_Final_Entry>
 			ASSERT(dsz != 0);
 
 			const size_t usz = pc.usizes.get(bid);
-			const Span<uint8_t> scratch = decompress_scratch(usz);
-			lzma_decompress_into(
-				scratch,
-				Const_Span<uint8_t>(pc.compressed_data + doff, dsz));
+			Span<uint8_t> scratch = decompress_scratch(usz);
+			if (!lzma_decode(scratch.data(), usz, pc.compressed_data + doff, dsz))
+				print_and_abort("LZMA error when trying to decompress a block.\n");
 
 			layered_decode_column<DTC_MULTI_BITMAP_BYTES>(
 				scratch.data(), positions, pc.entry_bytes, pc.rank_to_value,

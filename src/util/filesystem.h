@@ -5,7 +5,9 @@
 
 #include "system/system.h"
 
+#include <cctype>
 #include <filesystem>
+#include <string>
 #include <vector>
 #include <utility>
 
@@ -21,24 +23,30 @@ NODISCARD std::filesystem::path path_join(HeadT&& head, ArgsTs&&... args)
 	return std::filesystem::path(std::forward<HeadT>(head)) / path_join(std::forward<ArgsTs>(args)...);
 }
 
+// Whether `path` exists spelled exactly as on disk (KrK is not KRK). The
+// directory is scanned only when the case-flipped name exists too.
 NODISCARD inline bool file_exists_case_exact(const std::filesystem::path& path)
 {
 	std::error_code ec;
 	if (!std::filesystem::exists(path, ec) || ec)
 		return false;
-#if defined(OS_LINUX)
-	return true;
-#else
 	const std::string name = path.filename().string();
+	std::string flipped = name;
+	for (char& ch : flipped)
+	{
+		const unsigned char u = static_cast<unsigned char>(ch);
+		ch = static_cast<char>(std::isupper(u) ? std::tolower(u) : std::toupper(u));
+	}
 	std::filesystem::path dir = path.parent_path();
 	if (dir.empty())
 		dir = ".";
+	if (flipped == name || !std::filesystem::exists(dir / flipped, ec) || ec)
+		return true;
 	for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end;
 	     it.increment(ec))
 		if (it->path().filename().string() == name)
 			return true;
 	return false;
-#endif
 }
 
 struct Temporary_File_Tracker

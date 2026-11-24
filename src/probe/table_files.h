@@ -7,7 +7,7 @@
 #include "chess/piece_config.h"
 
 #include "util/cache.h"
-#include "util/compress.h"
+#include "util/decompress.h"
 #include "util/filesystem.h"
 #include "util/memory.h"
 #include "util/mono_uint_vec.h"
@@ -61,12 +61,10 @@ struct WDL_Per_Color
 	size_t block_cnt = 0;
 	Mono_Uint_Vec offsets;
 	const uint8_t* compressed_data = nullptr;
-	LZ4_Dict dict;
+	Const_Span<uint8_t> dict;  // in the mapped file
 	WDL_Stored single_val = WDL_Stored::DRAW;
 
-	size_t dict_size = 0;
 	size_t data_size = 0;
-	const uint8_t* lp_dict = nullptr;
 };
 
 struct LZMA_Rank_Per_Color
@@ -101,19 +99,17 @@ NODISCARD INLINE Block_Ptr lzma_rank_get_block(LZMA_Rank_Per_Color& pc, size_t b
 	ASSERT(dsz != 0);
 
 	auto buf = std::make_shared<std::vector<uint8_t>>(decode_sz, 0);
-	lzma_decompress_into(
-		Span<uint8_t>(buf->data(), decode_sz),
-		Const_Span<uint8_t>(pc.compressed_data + doff, dsz));
+	if (!lzma_decode(buf->data(), decode_sz, pc.compressed_data + doff, dsz))
+		throw std::runtime_error("LZMA error when trying to decompress a block.");
 	return buf;
 }
 
-NODISCARD INLINE uint16_t lzma_rank_value(const LZMA_Rank_Per_Color& pc,
-                                          const uint8_t* block, size_t in_block_pos)
+// The value of the rank stored at p, in entry_bytes.
+template <typename Per_Color>
+NODISCARD uint16_t rank_value(const Per_Color& pc, const uint8_t* p)
 {
-	if (pc.entry_bytes == 1) return pc.rank_to_value[block[in_block_pos]];
-	uint16_t rank;
-	std::memcpy(&rank, block + in_block_pos * sizeof(uint16_t), sizeof(rank));
-	return pc.rank_to_value[rank];
+	if (pc.entry_bytes == 1) return pc.rank_to_value[*p];
+	return pc.rank_to_value[read_le<uint16_t>(p)];
 }
 
 struct Layered_Rank_Per_Color
@@ -222,7 +218,8 @@ void Table_File<Traits>::load(const Piece_Config& ps, const std::filesystem::pat
 		if (flag & SINGULAR_FLAG)
 		{
 			is_singular[i] = true;
-			Traits::on_singular(reader, per_color[i]);
+			if (!Traits::on_singular(reader, per_color[i]))
+				throw std::runtime_error(std::string("Invalid ") + Traits::NAME + " singular value " + path.string());
 		}
 		else if (flag & DROPPED_FLAG)
 		{
@@ -244,7 +241,7 @@ void Table_File<Traits>::load(const Piece_Config& ps, const std::filesystem::pat
 	Traits::finalize(reader, per_color, is_singular, is_dropped);
 }
 
-NODISCARD constexpr WDL_Stored get_wdl_value(Packed_WDL_Entries packed, size_t pos)
+NODISCARD constexpr WDL_Stored get_wdl_value(uint8_t packed, size_t pos)
 {
 	ASSERT(pos < WDL_ENTRY_PACK_RATIO);
 	return static_cast<WDL_Stored>((packed >> (pos * WDL_ENTRY_BITS)) & 0xF);
@@ -257,7 +254,7 @@ struct WDL_Traits
 	static constexpr const char* NAME = "WDL";
 	using Per_Color = WDL_Per_Color;
 
-	static void on_singular(Serial_Memory_Reader& reader, Per_Color& pc);
+	NODISCARD static bool on_singular(Serial_Memory_Reader& reader, Per_Color& pc);
 	static void parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
 	                         const Position_Index_Config& index_cfg,
 	                         const std::filesystem::path& path);
@@ -281,19 +278,139 @@ NODISCARD constexpr DTZ_Value dtz_value_from_storage(
 	return DTZ_Value{ stored, false };
 }
 
-struct DTZ_Traits
+// The loaders the rank tables share: DTZ and DTM files differ only in what a
+// value means, as do DTC and DTM50 files.
+struct LZMA_Rank_Loader
+{
+	using Per_Color = LZMA_Rank_Per_Color;
+
+	NODISCARD static bool on_singular(Serial_Memory_Reader& reader, Per_Color& pc)
+	{
+		pc.single_val = reader.read<uint8_t>();
+		return true;
+	}
+
+	static void parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
+	                         const Position_Index_Config& index_cfg,
+	                         const std::filesystem::path& path)
+	{
+		const uint32_t perm = reader.read<uint32_t>();
+		if (!index_permutation_config_is_valid(index_cfg, perm))
+			throw std::runtime_error("Invalid index permutation config " + path.string());
+		pc.layout = make_index_storage_layout(index_cfg, perm);
+
+		pc.entry_bytes = reader.read<uint8_t>();
+		if (pc.entry_bytes != 1 && pc.entry_bytes != sizeof(uint16_t))
+			throw std::runtime_error("Bad entry_bytes " + path.string());
+		pc.tail_size  = reader.read<uint32_t>();
+		pc.block_size = reader.read<uint32_t>();
+		pc.block_cnt  = reader.read<uint64_t>();
+		pc.data_size  = reader.read<uint64_t>();
+
+		const size_t num_ranks = reader.read<uint16_t>();
+		pc.rank_to_value.resize(num_ranks);
+		for (size_t r = 0; r < num_ranks; ++r)
+			pc.rank_to_value[r] = reader.read<uint16_t>();
+	}
+
+	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
+	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB])
+	{
+		for (Color i : { WHITE, BLACK })
+		{
+			if (is_singular[i] || is_dropped[i]) continue;
+			Per_Color& pc = per_color[i];
+			const uint8_t log2_bu      = reader.read<uint8_t>();
+			const uint8_t sample_width = reader.read<uint8_t>();
+			const uint8_t offset_width = reader.read<uint8_t>();
+			reader.advance(1);  // usz_width
+			const uint8_t* mono_ptr = reader.caret();
+			const size_t mono_bytes = Mono_Uint_Vec::on_disk_bytes(
+				pc.block_cnt + 1, log2_bu, sample_width, offset_width);
+			reader.advance(mono_bytes);
+			pc.offsets = Mono_Uint_Vec(mono_ptr, pc.block_cnt + 1,
+			                           log2_bu, sample_width, offset_width);
+		}
+		for (Color i : { WHITE, BLACK })
+		{
+			if (is_singular[i] || is_dropped[i]) continue;
+			reader.align(64);
+			per_color[i].compressed_data = reader.caret();
+			reader.advance(per_color[i].data_size);
+		}
+	}
+};
+
+struct Layered_Rank_Loader
+{
+	using Per_Color = Layered_Rank_Per_Color;
+
+	NODISCARD static bool on_singular(Serial_Memory_Reader& reader, Per_Color&)
+	{
+		return reader.read<uint8_t>() == 0;  // the singular value must be DRAW
+	}
+
+	static void parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
+	                         const Position_Index_Config& index_cfg,
+	                         const std::filesystem::path& path)
+	{
+		const uint32_t perm = reader.read<uint32_t>();
+		if (!index_permutation_config_is_valid(index_cfg, perm))
+			throw std::runtime_error("Invalid index permutation config " + path.string());
+		pc.layout = make_index_storage_layout(index_cfg, perm);
+
+		pc.entry_bytes = reader.read<uint8_t>();
+		if (pc.entry_bytes != 1 && pc.entry_bytes != sizeof(uint16_t))
+			throw std::runtime_error("Bad entry_bytes " + path.string());
+		pc.block_positions = reader.read<uint32_t>();
+		pc.block_cnt       = reader.read<uint64_t>();
+		pc.tail_positions  = reader.read<uint32_t>();
+		pc.data_size       = reader.read<uint64_t>();
+
+		const size_t num_ranks = reader.read<uint16_t>();
+		pc.rank_to_value.resize(num_ranks);
+		for (size_t r = 0; r < num_ranks; ++r)
+			pc.rank_to_value[r] = reader.read<uint16_t>();
+	}
+
+	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
+	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB])
+	{
+		for (Color i : { WHITE, BLACK })
+		{
+			if (is_singular[i] || is_dropped[i]) continue;
+			Per_Color& pc = per_color[i];
+			const uint8_t log2_bu      = reader.read<uint8_t>();
+			const uint8_t sample_width = reader.read<uint8_t>();
+			const uint8_t offset_width = reader.read<uint8_t>();
+			const uint8_t usz_width    = reader.read<uint8_t>();
+			const uint8_t* mono_ptr = reader.caret();
+			const size_t mono_bytes = Mono_Uint_Vec::on_disk_bytes(
+				pc.block_cnt + 1, log2_bu, sample_width, offset_width);
+			reader.advance(mono_bytes);
+			const uint8_t* usz_ptr = reader.caret();
+			const size_t usz_bytes = Min0_Uint_Vec::on_disk_bytes(pc.block_cnt, usz_width);
+			reader.advance(usz_bytes);
+			pc.offsets = Mono_Uint_Vec(mono_ptr, pc.block_cnt + 1,
+			                           log2_bu, sample_width, offset_width);
+			pc.usizes = Min0_Uint_Vec(usz_ptr, pc.block_cnt, usz_width);
+		}
+		for (Color i : { WHITE, BLACK })
+		{
+			if (is_singular[i] || is_dropped[i]) continue;
+			reader.align(64);
+			per_color[i].compressed_data = reader.caret();
+			reader.advance(per_color[i].data_size);
+		}
+	}
+};
+
+struct DTZ_Traits : LZMA_Rank_Loader
 {
 	static constexpr EGTB_Magic MAGIC = EGTB_Magic::DTZ_MAGIC;
 	static constexpr size_t TL_BLOCK_SLOTS = 16;
 	static constexpr const char* NAME = "DTZ";
-	using Per_Color = LZMA_Rank_Per_Color;
 
-	static void on_singular(Serial_Memory_Reader& reader, Per_Color& pc);
-	static void parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
-	                         const Position_Index_Config& index_cfg,
-	                         const std::filesystem::path& path);
-	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static DTZ_Value read(Per_Color& pc, bool is_singular, Board_Index pos, WDL_Entry wdl);
 };
 
@@ -312,19 +429,12 @@ struct DTC_Curve
 	uint16_t value[DTC_PACK_LAYERS];
 };
 
-struct DTC_Traits
+struct DTC_Traits : Layered_Rank_Loader
 {
 	static constexpr EGTB_Magic MAGIC = EGTB_Magic::DTC_MAGIC;
 	static constexpr size_t TL_BLOCK_SLOTS = 16;
 	static constexpr const char* NAME = "DTC";
-	using Per_Color = Layered_Rank_Per_Color;
 
-	static void on_singular(Serial_Memory_Reader& reader, Per_Color& pc);
-	static void parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
-	                         const Position_Index_Config& index_cfg,
-	                         const std::filesystem::path& path);
-	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static DTC_Cell read(Per_Color& pc, bool is_singular, Board_Index pos,
 	                               WDL_Entry wdl, unsigned rule50);
 	static void read_curve(Per_Color& pc, bool is_singular, Board_Index pos,
@@ -345,19 +455,12 @@ NODISCARD constexpr uint16_t dtm_value_from_storage(uint16_t stored, WDL_Entry w
 	}
 }
 
-struct DTM_Traits
+struct DTM_Traits : LZMA_Rank_Loader
 {
 	static constexpr EGTB_Magic MAGIC = EGTB_Magic::DTM_MAGIC;
 	static constexpr size_t TL_BLOCK_SLOTS = 16;
 	static constexpr const char* NAME = "DTM";
-	using Per_Color = LZMA_Rank_Per_Color;
 
-	static void on_singular(Serial_Memory_Reader& reader, Per_Color& pc);
-	static void parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
-	                         const Position_Index_Config& index_cfg,
-	                         const std::filesystem::path& path);
-	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static uint16_t read(Per_Color& pc, bool is_singular, Board_Index pos, WDL_Entry wdl);
 };
 
@@ -384,19 +487,12 @@ NODISCARD constexpr uint16_t dtm50_value_from_storage(uint16_t stored, WDL_Entry
 	}
 }
 
-struct DTM50_Traits
+struct DTM50_Traits : Layered_Rank_Loader
 {
 	static constexpr EGTB_Magic MAGIC = EGTB_Magic::DTM50_MAGIC;
 	static constexpr size_t TL_BLOCK_SLOTS = 16;
 	static constexpr const char* NAME = "DTM50";
-	using Per_Color = DTM50_Rank_Per_Color;
 
-	static void on_singular(Serial_Memory_Reader& reader, Per_Color& pc);
-	static void parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
-	                         const Position_Index_Config& index_cfg,
-	                         const std::filesystem::path& path);
-	static void finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-	                     const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB]);
 	NODISCARD static DTM50_Cell read(Per_Color& pc, bool is_singular, Board_Index pos,
 	                                 WDL_Entry wdl, unsigned hmc);
 };

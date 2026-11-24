@@ -44,35 +44,19 @@ Pawn_Slice_Manager::Pawn_Slice_Manager(const Pair_Group* pair,
 	if (m_white_table_size > 1)
 		m_white_table_size_div = Divider<uint64_t>(m_white_table_size);
 
-	auto placements_of = [](const Piece_Group* g,
-	                        std::vector<Piece_Group::Placement>& out_pl,
-	                        std::vector<Bitboard>& out_occ) {
-		if (g == nullptr)
-		{
-			out_pl.emplace_back();
-			out_occ.push_back(Bitboard::make_empty());
-			return;
-		}
-		out_pl.reserve(g->table_size());
-		out_occ.reserve(g->table_size());
-		for (size_t i = 0; i < g->table_size(); ++i)
-		{
-			out_pl.push_back(g->squares(static_cast<Piece_Group::Placement_Index>(i)));
-			Bitboard occ = Bitboard::make_empty();
-			for (const Square s : out_pl.back()) occ |= square_bb(s);
-			out_occ.push_back(occ);
-		}
+	auto placements_of = [](const Piece_Group* g) {
+		std::vector<Bitboard> out;
+		for (size_t i = 0; i < (g ? g->table_size() : 1); ++i)
+			out.push_back(g ? g->squares(static_cast<Piece_Group::Placement_Index>(i)).occupancy()
+			                : Bitboard::make_empty());
+		return out;
 	};
-	std::vector<Piece_Group::Placement> white_pl, black_pl;
-	std::vector<Bitboard> white_occ, black_occ;
-	placements_of(m_white_group, white_pl, white_occ);
-	placements_of(m_black_group, black_pl, black_occ);
 
 	// The bitmap is shared by rank (compose) and the reverse storage map.
 	// Build it by bitsets, then enumerate its set bits once in storage order.
 	m_rank_blocks.assign((m_num_cartesian_slices + 63) / 64, Rank_Block{});
 	m_num_slices = 0;
-	build_pawn_slice_bits(pair, white_pl, black_pl, white_occ, black_occ,
+	build_pawn_slice_bits(pair, placements_of(m_white_group), placements_of(m_black_group),
 		[&](size_t cart, uint64_t bits) {
 			if (!bits) return;
 			m_num_slices += popcnt(bits);
@@ -149,45 +133,34 @@ int32_t Pawn_Slice_Manager::mirror_slice_of(int32_t slice_id) const
 {
 	if (!m_has_pawns) return slice_id;
 	const Decomposed d = decompose(slice_id);
-
-	auto mirror_group_idx = [](const Piece_Group* g, Piece_Group::Placement_Index idx) {
-		if (g == nullptr) return idx;
-		const auto pl = g->squares(idx);
-		const auto mir = pl.with_transformed_squares(
-			[](Square s) { return sq_file_mirror(s); });
-		return g->compound_index(mir);
-	};
-
-	if (!m_pair_group)
-		return compose(d.pair_idx,
-		               mirror_group_idx(m_white_group, d.white_idx),
-		               mirror_group_idx(m_black_group, d.black_idx));
-
-	Square wsq[Piece_Group::MAX_PIECE_GROUP_SIZE + 1];
-	Square bsq[Piece_Group::MAX_PIECE_GROUP_SIZE + 1];
-	size_t nw = 0, nb = 0;
-	wsq[nw++] = sq_file_mirror(m_pair_group->white_square(d.pair_idx));
-	bsq[nb++] = sq_file_mirror(m_pair_group->black_square(d.pair_idx));
-	if (m_white_group)
-		for (const Square s : m_white_group->squares(d.white_idx))
-			wsq[nw++] = sq_file_mirror(s);
-	if (m_black_group)
-		for (const Square s : m_black_group->squares(d.black_idx))
-			bsq[nb++] = sq_file_mirror(s);
-
+	Bitboard white = m_white_group ? m_white_group->squares(d.white_idx).occupancy() : Bitboard::make_empty();
+	Bitboard black = m_black_group ? m_black_group->squares(d.black_idx).occupancy() : Bitboard::make_empty();
 	Square pair_w = SQ_END, pair_b = SQ_END;
-	Pair_Group::canonical_pair(Const_Span<Square>(wsq, nw),
-	                           Const_Span<Square>(bsq, nb), pair_w, pair_b);
+	if (m_pair_group)
+	{
+		white |= m_pair_group->white_square(d.pair_idx);
+		black |= m_pair_group->black_square(d.pair_idx);
+	}
+	white = white.mirror_files();
+	black = black.mirror_files();
+	if (m_pair_group)
+	{
+		Pair_Group::canonical_pair(white, black, pair_w, pair_b);
+		white ^= pair_w;
+		black ^= pair_b;
+	}
+	return lookup(pair_w, pair_b, white, black);
+}
 
-	Square free_w[Piece_Group::MAX_PIECE_GROUP_SIZE];
-	Square free_b[Piece_Group::MAX_PIECE_GROUP_SIZE];
-	size_t nfw = 0, nfb = 0;
-	for (size_t i = 0; i < nw; ++i) if (wsq[i] != pair_w) free_w[nfw++] = wsq[i];
-	for (size_t i = 0; i < nb; ++i) if (bsq[i] != pair_b) free_b[nfb++] = bsq[i];
-
-	return lookup_from_squares(pair_w, pair_b,
-	                           Const_Span<Square>(free_w, nfw),
-	                           Const_Span<Square>(free_b, nfb));
+int32_t Pawn_Slice_Manager::lookup(Square pair_white_sq, Square pair_black_sq,
+                                   Bitboard white, Bitboard black) const
+{
+	if (!m_has_pawns) return 0;
+	const Pair_Group::Index pair_idx =
+		m_pair_group ? m_pair_group->index_of(pair_white_sq, pair_black_sq) : 0;
+	const Piece_Group::Placement_Index w_idx = m_white_group ? m_white_group->index_of(white) : 0;
+	const Piece_Group::Placement_Index b_idx = m_black_group ? m_black_group->index_of(black) : 0;
+	return compose(pair_idx, w_idx, b_idx);
 }
 
 Pawn_Slice_Manager::Decomposed Pawn_Slice_Manager::decompose(int32_t slice_id) const
@@ -338,36 +311,6 @@ void Pawn_Slice_Manager::push_target_slices(int32_t slice_id, std::vector<int32_
 
 	std::sort(out.begin(), out.end());
 	out.erase(std::unique(out.begin(), out.end()), out.end());
-}
-
-int32_t Pawn_Slice_Manager::lookup_from_squares(
-	Square pair_white_sq, Square pair_black_sq,
-	Const_Span<Square> white_pawn_squares,
-	Const_Span<Square> black_pawn_squares) const
-{
-	if (!m_has_pawns) return 0;
-
-	const Pair_Group::Index pair_idx =
-		m_pair_group ? m_pair_group->index_of(pair_white_sq, pair_black_sq) : 0;
-
-	Piece_Group::Placement_Index w_idx = 0;
-	Piece_Group::Placement_Index b_idx = 0;
-
-	if (m_white_group)
-	{
-		Piece_Group::Placement pl;
-		for (size_t i = 0; i < white_pawn_squares.size(); ++i)
-			pl.add(white_pawn_squares[i]);
-		w_idx = m_white_group->compound_index(pl);
-	}
-	if (m_black_group)
-	{
-		Piece_Group::Placement pl;
-		for (size_t i = 0; i < black_pawn_squares.size(); ++i)
-			pl.add(black_pawn_squares[i]);
-		b_idx = m_black_group->compound_index(pl);
-	}
-	return compose(pair_idx, w_idx, b_idx);
 }
 
 int32_t Pawn_Slice_Manager::slice_after_pawn_push(

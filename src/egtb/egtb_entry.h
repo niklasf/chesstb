@@ -470,7 +470,6 @@ struct DTM_Entry_Base
 
 	NODISCARD constexpr DTM_Score value() const { return static_cast<DTM_Score>(m_data & VALUE_MASK); }
 
-
 	NODISCARD constexpr bool operator==(DTM_Entry_Base o) const { return m_data == o.m_data; }
 	NODISCARD constexpr bool operator!=(DTM_Entry_Base o) const { return m_data != o.m_data; }
 
@@ -498,8 +497,6 @@ struct DTM_Intermediate_Entry : DTM_Entry_Base
 
 	// The cached out-of-retro bound, or zero where no move fixed one.
 	NODISCARD constexpr uint16_t bound() const { return static_cast<uint16_t>(m_data & VALUE_MASK); }
-
-	NODISCARD constexpr bool has_flag(DTM_Intermediate_Entry_Flag f) const { return (m_data & f) != 0; }
 
 	constexpr void set_flag(DTM_Intermediate_Entry_Flag f)   { m_data |= f; }
 	constexpr void clear_flag(DTM_Intermediate_Entry_Flag f) { m_data &= ~f; }

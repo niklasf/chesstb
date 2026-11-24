@@ -232,15 +232,15 @@ bool check_material(const Options& opt, const std::string& name)
 						continue;
 					if (board_index_of_position(epsi, native, pos) != idx) continue;
 
-					const Probe_Result cr = dtz_tables.probe(ps, pos, /*rule50=*/0);
-					if (cr.status != Probe_Result::Status::OK) continue;
-					const Probe_Result mr = dtm_tables.probe(ps, pos, /*rule50=*/0);
+					const Probe_Result cr = dtz_tables.probe(pos, SQ_END, /*rule50=*/0);
+					if (cr.wdl == WDL_Entry::ILLEGAL) continue;
+					const Probe_Result mr = dtm_tables.probe(pos, SQ_END, /*rule50=*/0);
 					++s.scanned;
 					const WDL_Entry w = cr.wdl;
 					s.per_wdl[static_cast<size_t>(w)] += 1;
 
-					// DRAW/ILLEGAL stored bits are don't-care (see egtb_entry.h).
-					if (w == WDL_Entry::ILLEGAL || w == WDL_Entry::DRAW) continue;
+					// DRAW cells' stored bits are don't-care (see egtb_entry.h).
+					if (w == WDL_Entry::DRAW) continue;
 					++s.classified;
 
 					s.seen_dtz   |= cr.has_dtz;
@@ -283,7 +283,7 @@ bool check_material(const Options& opt, const std::string& name)
 					}
 
 					const Probe_Result pr = check_dtc
-						? dtc_tables.probe(ps, pos, /*rule50=*/0)
+						? dtc_tables.probe(pos, SQ_END, /*rule50=*/0)
 						: Probe_Result{};
 					s.seen_dtc |= pr.has_dtc;
 					if (pr.has_dtc)

@@ -8,17 +8,15 @@
 #include <cstdint>
 #include <vector>
 
-// Emit survivor bits in the existing cartesian order: pair, white, black.
-// Each call supplies up to 64 bits starting at cart; adjacent calls may
-// share a destination word when a placement radix is not word-aligned.
-// Generator and prober placements have different types but the same API.
-template <typename Placement, typename Emit>
+// Emits survivor bits in cartesian order (pair, white, black). `white` and
+// `black` list each side's free-pawn placements (one empty board if none);
+// each call gives up to 64 bits from `cart`, sharing a word across calls
+// when a radix isn't word-aligned.
+template <typename Emit>
 void build_pawn_slice_bits(
 	const Pair_Group* pair,
-	const std::vector<Placement>& white,
-	const std::vector<Placement>& black,
-	const std::vector<Bitboard>& white_occ,
-	const std::vector<Bitboard>& black_occ,
+	const std::vector<Bitboard>& white,
+	const std::vector<Bitboard>& black,
 	Emit&& emit)
 {
 	if (pair)
@@ -38,23 +36,25 @@ void build_pawn_slice_bits(
 			for (Square sq = SQ_A2; sq <= SQ_H7; sq = static_cast<Square>(sq + 1))
 			{
 				if (sq == pw || sq == pb) continue;
-				Square ws[] = {pw, sq}, bs[] = {pb, sq};
 				Square cw = SQ_END, cb = SQ_END;
-				Pair_Group::canonical_pair(Const_Span<Square>(ws, 2), Const_Span<Square>(bs, 1), cw, cb);
+				Pair_Group::canonical_pair(square_bb(pw) | sq, square_bb(pb), cw, cb);
 				if (cw == pw && cb == pb)
 					white_allowed[sq][p >> 6] |= uint64_t{1} << (p & 63);
-				Pair_Group::canonical_pair(Const_Span<Square>(ws, 1), Const_Span<Square>(bs, 2), cw, cb);
+				Pair_Group::canonical_pair(square_bb(pw), square_bb(pb) | sq, cw, cb);
 				if (cw == pw && cb == pb)
 					black_allowed[sq][p >> 6] |= uint64_t{1} << (p & 63);
 			}
 		}
-		auto candidates = [&](const std::vector<Placement>& placements,
+		auto candidates = [&](const std::vector<Bitboard>& placements,
 		                      const std::array<Mask, SQUARE_NB>& allowed) {
 			std::vector<Mask> result(placements.size(), all);
 			for (size_t i = 0; i < placements.size(); ++i)
-				for (size_t j = 0; j < placements[i].size(); ++j)
+				for (Bitboard b = placements[i]; b;)
+				{
+					const Square sq = b.pop_first_square();
 					for (size_t word = 0; word < 2; ++word)
-						result[i][word] &= allowed[placements[i][j]][word];
+						result[i][word] &= allowed[sq][word];
+				}
 			return result;
 		};
 		const auto white_candidates = candidates(white, white_allowed);
@@ -69,20 +69,23 @@ void build_pawn_slice_bits(
 			for (Square ws = SQ_A2; ws <= SQ_H7; ws = static_cast<Square>(ws + 1))
 			{
 				size_t first = pair->table_size();
-				for (size_t j = 0; j < black[b].size(); ++j)
-					if (Pair_Group::is_opposing_pair(ws, black[b][j]))
-						first = std::min(first, static_cast<size_t>(pair->index_of(ws, black[b][j])));
+				for (Bitboard t = black[b]; t;)
+				{
+					const Square bs = t.pop_first_square();
+					if (Pair_Group::is_opposing_pair(ws, bs))
+						first = std::min(first, static_cast<size_t>(pair->index_of(ws, bs)));
+				}
 				before[ws] = prefix(first);
 			}
 			for (size_t w = 0; w < white.size(); ++w, cart += pair->table_size())
 			{
-				if (white_occ[w] & black_occ[b]) continue;
+				if (white[w] & black[b]) continue;
 				Mask survivors;
 				for (size_t word = 0; word < 2; ++word)
 				{
 					survivors[word] = white_candidates[w][word] & black_candidates[b][word];
-					for (size_t j = 0; j < white[w].size(); ++j)
-						survivors[word] &= before[white[w][j]][word];
+					for (Bitboard t = white[w]; t;)
+						survivors[word] &= before[t.pop_first_square()][word];
 				}
 				emit(cart, survivors[0]);
 				emit(cart + 64, survivors[1]);
@@ -97,15 +100,15 @@ void build_pawn_slice_bits(
 		std::array<std::vector<uint64_t>, SQUARE_NB> occupied;
 		for (auto& bits : occupied) bits.resize(words);
 		for (size_t w = 0; w < white.size(); ++w)
-			for (size_t j = 0; j < white[w].size(); ++j)
-				occupied[white[w][j]][w >> 6] |= uint64_t{1} << (w & 63);
+			for (Bitboard t = white[w]; t;)
+				occupied[t.pop_first_square()][w >> 6] |= uint64_t{1} << (w & 63);
 		const size_t tail = white.size() & 63;
 		for (size_t b = 0; b < black.size(); ++b)
 			for (size_t word = 0; word < words; ++word)
 			{
 				uint64_t blocked = 0;
-				for (size_t j = 0; j < black[b].size(); ++j)
-					blocked |= occupied[black[b][j]][word];
+				for (Bitboard t = black[b]; t;)
+					blocked |= occupied[t.pop_first_square()][word];
 				uint64_t survivors = ~blocked;
 				if (word + 1 == words && tail)
 					survivors &= (uint64_t{1} << tail) - 1;

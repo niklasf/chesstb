@@ -33,16 +33,13 @@ endif
 
 OBJDIR := $(ROOT)/obj
 
-COMMON_C := \
-  $(wildcard $(ROOT)/lib/lz4/*.c) \
-  $(wildcard $(ROOT)/lib/LZMA/*.c) \
-  $(wildcard $(ROOT)/lib/zstd/common/*.c) \
-  $(wildcard $(ROOT)/lib/zstd/compress/*.c) \
-  $(wildcard $(ROOT)/lib/zstd/dictBuilder/*.c)
+# The prober decodes with src/util/decompress.h; of lib/ it needs only xxhash
+# (the tables' checksums). The generator's encoders stay out.
+COMMON_C := $(ROOT)/lib/zstd/common/xxhash.c
 
 COMMON_CXX := \
   $(wildcard $(ROOT)/src/chess/*.cpp) \
-  $(wildcard $(ROOT)/src/util/*.cpp) \
+  $(filter-out $(ROOT)/src/util/compress.cpp,$(wildcard $(ROOT)/src/util/*.cpp)) \
   $(wildcard $(ROOT)/src/probe/*.cpp)
 
 HDRS := $(shell find $(ROOT)/src $(ROOT)/lib -name '*.h' -o -name '*.hpp' 2>/dev/null)
@@ -63,10 +60,6 @@ $(OBJDIR)/%.o: $(ROOT)/%.c $(LIB_HDRS) $(MAKEFILE)
 	$(E) "  CC      $(patsubst $(ROOT)/%,%,$<)"
 	$(Q)$(CXX) $(CFLAGS) -x c -c $< -o $@
 
-ifeq ($(CXX_IS_GCC),1)
-$(OBJDIR)/lib/LZMA/LzmaEnc.o: CFLAGS += -Wno-dangling-pointer
-endif
-
 .PHONY: all probe clean
 .DEFAULT_GOAL := all
 all:   probe_fen
@@ -83,7 +76,9 @@ clean:
 	$(Q)rm -f probe_fen compare_syzygy check_tables check_fixedpoint
 
 # Verifiers. No target builds these; uncomment the rule you want and run
-# `make -C tools <binary>`. compare_syzygy also needs a Fathom checkout:
+# `make -C tools <binary>`. They walk tables index by index, so they build the
+# prober's index -> position (CHESSTB_INDEX_INVERSE). compare_syzygy also needs
+# a Fathom checkout:
 #   git clone https://github.com/jdart1/Fathom.git lib/Fathom
 #
 # FATHOM_C     := $(ROOT)/lib/Fathom/src/tbprobe.c
@@ -93,21 +88,21 @@ clean:
 #
 # compare_syzygy: compare_syzygy.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(FATHOM_C_OBJ) $(HDRS) $(MAKEFILE)
 #	$(E) "  CXXLD   compare_syzygy"
-#	$(Q)$(CXX) $(CXXFLAGS) -I$(ROOT)/lib/Fathom/src \
+#	$(Q)$(CXX) $(CXXFLAGS) -DCHESSTB_INDEX_INVERSE -I$(ROOT)/lib/Fathom/src \
 #	    -x c++ compare_syzygy.cpp $(COMMON_CXX) \
 #	    -x none $(COMMON_C_OBJ) $(FATHOM_C_OBJ) \
 #	    $(LDFLAGS) -o $@
 #
 # check_tables: check_tables.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(HDRS) $(MAKEFILE)
 #	$(E) "  CXXLD   check_tables"
-#	$(Q)$(CXX) $(CXXFLAGS) \
+#	$(Q)$(CXX) $(CXXFLAGS) -DCHESSTB_INDEX_INVERSE \
 #	    -x c++ check_tables.cpp $(COMMON_CXX) \
 #	    -x none $(COMMON_C_OBJ) \
 #	    $(LDFLAGS) -o $@
 #
 # check_fixedpoint: check_fixedpoint.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(HDRS) $(MAKEFILE)
 #	$(E) "  CXXLD   check_fixedpoint"
-#	$(Q)$(CXX) $(CXXFLAGS) \
+#	$(Q)$(CXX) $(CXXFLAGS) -DCHESSTB_INDEX_INVERSE \
 #	    -x c++ check_fixedpoint.cpp $(COMMON_CXX) \
 #	    -x none $(COMMON_C_OBJ) \
 #	    $(LDFLAGS) -o $@

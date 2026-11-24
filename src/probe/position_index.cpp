@@ -14,6 +14,7 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -30,85 +31,59 @@ constexpr std::array<std::array<uint32_t, 8>, 65> BINOMIAL = []() {
 	return b;
 }();
 
-constexpr Square ANCHOR_FILE_MIRROR_SQUARES[] = {
-	SQ_A1, SQ_B1, SQ_C1, SQ_D1,
-	SQ_A2, SQ_B2, SQ_C2, SQ_D2,
-	SQ_A3, SQ_B3, SQ_C3, SQ_D3,
-	SQ_A4, SQ_B4, SQ_C4, SQ_D4,
-	SQ_A5, SQ_B5, SQ_C5, SQ_D5,
-	SQ_A6, SQ_B6, SQ_C6, SQ_D6,
-	SQ_A7, SQ_B7, SQ_C7, SQ_D7,
-	SQ_A8, SQ_B8, SQ_C8, SQ_D8,
-};
+constexpr uint64_t PAWN_SQUARES_BB = 0x00FFFFFFFFFFFF00ull;  // ranks 2-7
 
-constexpr Square ANCHOR_TRIANGLE_SQUARES[] = {
-	SQ_A1, SQ_B1, SQ_C1, SQ_D1,
-	SQ_B2, SQ_C2, SQ_D2,
-	SQ_C3, SQ_D3,
-	SQ_D4,
-};
-
-NODISCARD Square apply_transform(Square sq, Symmetry_Transform t)
+// Without a pair only overlaps are cut, so a slice is direct: black's
+// placement, then white's colex rank among the pawn squares black leaves free.
+// Removing black's squares keeps the remaining ones in order.
+NODISCARD size_t free_square_rank(Bitboard white, Bitboard black)
 {
-	int f = sq_file(sq);
-	int r = sq_rank(sq);
-	const uint8_t bits = static_cast<uint8_t>(t);
-	if (bits & 1) f = 7 - f;
-	if (bits & 2) r = 7 - r;
-	if (bits & 4) std::swap(f, r);
-	return sq_make(static_cast<Rank>(r), static_cast<File>(f));
+	const uint64_t free = PAWN_SQUARES_BB & ~black.bits();
+	uint64_t white_bb = white.bits();
+	size_t rank = 0;
+#if CHESSTB_HAVE_PEXT
+	uint64_t bits = _pext_u64(white_bb, free);
+	for (size_t k = 1; bits; ++k) rank += BINOMIAL[pop_first_bit(bits)][k];
+#else
+	for (size_t k = 1; white_bb; ++k)
+		rank += BINOMIAL[popcnt(free & ((uint64_t{1} << pop_first_bit(white_bb)) - 1))][k];
+#endif
+	return rank;
 }
 
-Square apply_diag_transform(Square sq)
+#ifdef CHESSTB_INDEX_INVERSE
+// The inverse: the n white pawns of that rank.
+NODISCARD Bitboard free_square_unrank(size_t rank, size_t n, Bitboard black)
 {
-	return apply_transform(sq, Symmetry_Transform::DIAG);
-}
-
-bool sq_on_main_diag(Square sq)
-{
-	return static_cast<int>(sq_file(sq)) == static_cast<int>(sq_rank(sq));
-}
-
-bool kings_adjacent(Square a, Square b)
-{
-	return king_attacks(a).has_square(b);
-}
-
-Const_Span<Square> anchor_legal_squares(Symmetry_Group sym)
-{
-	switch (sym)
+	const uint64_t free = PAWN_SQUARES_BB & ~black.bits();
+	uint64_t bits = 0;
+	size_t hi = popcnt(free);
+	for (size_t k = n; k > 0; --k)
 	{
-		case Symmetry_Group::DIHEDRAL_8:
-			return Const_Span<Square>(ANCHOR_TRIANGLE_SQUARES,
-			                          std::size(ANCHOR_TRIANGLE_SQUARES));
-		case Symmetry_Group::FILE_MIRROR:
-			return Const_Span<Square>(ANCHOR_FILE_MIRROR_SQUARES,
-			                          std::size(ANCHOR_FILE_MIRROR_SQUARES));
-		case Symmetry_Group::NONE:
-			break;
+		size_t p = hi - 1;
+		while (BINOMIAL[p][k] > rank) --p;
+		bits |= uint64_t{1} << p;
+		rank -= BINOMIAL[p][k];
+		hi = p;
 	}
-	ASSUME(false);
-	return Const_Span<Square>(ANCHOR_FILE_MIRROR_SQUARES, size_t(0));
+	return Bitboard(pdep_u64(bits, free));
 }
+#endif
 
-bool is_anchor_legal(Symmetry_Group sym, Square wk)
-{
-	const auto sqs = anchor_legal_squares(sym);
-	for (size_t i = 0; i < sqs.size(); ++i)
-		if (sqs[i] == wk) return true;
-	return false;
-}
+// White king squares of the slices: files a-d under the file mirror, the
+// a1-d1-d4 triangle under all eight symmetries.
+constexpr Bitboard ANCHOR_FILE_MIRROR(0x0F0F0F0F0F0F0F0FULL);
+constexpr Bitboard ANCHOR_TRIANGLE(0x00000000080C0E0FULL);
+constexpr Bitboard MAIN_DIAG(0x8040201008040201ULL);
 
-int num_transforms(Symmetry_Group sym)
+// The transform mask on every square of `b`: 1 mirrors the files, 2 the
+// ranks, 4 then the a1-h8 diagonal.
+NODISCARD Bitboard apply_transform(Bitboard b, uint8_t t)
 {
-	switch (sym)
-	{
-		case Symmetry_Group::DIHEDRAL_8:  return 8;
-		case Symmetry_Group::FILE_MIRROR: return 2;
-		case Symmetry_Group::NONE:        break;
-	}
-	ASSUME(false);
-	return 1;
+	if (t & 1) b = b.mirror_files();
+	if (t & 2) b = b.mirror_ranks();
+	if (t & 4) b = b.mirror_diag();
+	return b;
 }
 
 const King_Slice_Manager& slice_mgr_for(Symmetry_Group sym)
@@ -128,8 +103,7 @@ NODISCARD const King_Slice_Manager& castling_slice_mgr(size_t white_rights,
 		for (size_t w = 0; w < STRIDE; ++w)
 			for (size_t b = 0; b < STRIDE; ++b)
 				if (w + b > 0)
-					t[w * STRIDE + b] = std::make_unique<King_Slice_Manager>(
-						Symmetry_Group::NONE, w, b);
+					t[w * STRIDE + b] = std::make_unique<King_Slice_Manager>(w, b);
 		return t;
 	}();
 	const auto& mgr = table[white_rights * STRIDE + black_rights];
@@ -137,138 +111,40 @@ NODISCARD const King_Slice_Manager& castling_slice_mgr(size_t white_rights,
 	return *mgr;
 }
 
-void apply_transform_to_placements(
-	In_Out_Param<std::array<Piece_Group::Placement, PIECE_CLASS_NB>> placements,
-	const Position_Index_Config& cfg,
-	Symmetry_Transform t)
-{
-	if (t == Symmetry_Transform::IDENTITY) return;
-
-	auto xform = [t](Square s) { return apply_transform(s, t); };
-
-	(*placements)[WHITE_KINGS] = (*placements)[WHITE_KINGS].with_transformed_squares(xform);
-	(*placements)[BLACK_KINGS] = (*placements)[BLACK_KINGS].with_transformed_squares(xform);
-
-	for (Piece_Class c : { WHITE_PAWNS, BLACK_PAWNS })
-		if ((*placements)[c].size() > 0)
-			(*placements)[c] = (*placements)[c].with_transformed_squares(xform);
-
-	for (size_t i = 0; i < cfg.num_populated_classes(); ++i)
-	{
-		const Piece_Class c = cfg.populated_classes()[i];
-		(*placements)[c] = (*placements)[c].with_transformed_squares(xform);
-	}
-}
-
-void canonicalize_placements(
-	In_Out_Param<std::array<Piece_Group::Placement, PIECE_CLASS_NB>> placements,
-	const Position_Index_Config& cfg)
-{
-	ASSERT(!cfg.king_slice_manager().has_castling);
-
-	const Square wk = (*placements)[WHITE_KINGS][0];
-	const Square bk = (*placements)[BLACK_KINGS][0];
-	const auto& lookup = cfg.king_slice_manager().lookup(wk, bk);
-
-	if (lookup.slice_id == SLICE_NONE) return;
-
-	apply_transform_to_placements(placements, cfg, lookup.transform);
-
-	if (lookup.has_diag_stabilizer)
-	{
-		size_t within_cur = 0;
-		size_t within_alt = 0;
-		for (size_t i = 0; i < cfg.num_populated_classes(); ++i)
-		{
-			const Piece_Class c = cfg.populated_classes()[i];
-			const auto& cur = (*placements)[c];
-			const auto alt = cur.with_transformed_squares(apply_diag_transform);
-			within_cur += cfg.weight(c) * cfg.group(c).compound_index(cur);
-			within_alt += cfg.weight(c) * cfg.group(c).compound_index(alt);
-		}
-
-		if (within_alt < within_cur)
-		{
-			for (size_t i = 0; i < cfg.num_populated_classes(); ++i)
-			{
-				const Piece_Class c = cfg.populated_classes()[i];
-				(*placements)[c] =
-					(*placements)[c].with_transformed_squares(apply_diag_transform);
-			}
-		}
-	}
-}
-
-std::array<Piece_Group::Placement, PIECE_CLASS_NB>
-placements_from_position(const Position_Index_Config& cfg, const Position& pos)
-{
-	std::array<Piece_Group::Placement, PIECE_CLASS_NB> out{};
-
-	out[WHITE_KINGS].add(pos.king_square(WHITE));
-	out[BLACK_KINGS].add(pos.king_square(BLACK));
-
-	for (size_t i = 0; i < cfg.num_populated_classes(); ++i)
-	{
-		const Piece_Class c = cfg.populated_classes()[i];
-		const Piece pc = cfg.group(c).piece();
-		Bitboard b = pos.piece_bb(pc);
-		while (b)
-			out[c].add(b.pop_first_square());
-	}
-
-	const bool has_pair = cfg.pair_group() != nullptr;
-	for (Piece_Class c : { WHITE_PAWNS, BLACK_PAWNS })
-	{
-		if (!cfg.is_populated(c) && !has_pair) continue;
-		const Piece pc = (c == WHITE_PAWNS) ? WHITE_PAWN : BLACK_PAWN;
-		Bitboard b = pos.piece_bb(pc);
-		while (b)
-			out[c].add(b.pop_first_square());
-	}
-	return out;
-}
-
 }  // namespace
+
+const Pawn_Slice_Manager& pawn_slice_mgr(bool has_pair, size_t white_pawns, size_t black_pawns)
+{
+	constexpr size_t STRIDE = MAX_TOTAL_PAWNS + 1;
+	static std::mutex mu;
+	static std::array<std::unique_ptr<const Pawn_Slice_Manager>, 2 * STRIDE * STRIDE> table;
+	ASSERT(white_pawns < STRIDE && black_pawns < STRIDE);
+	std::lock_guard<std::mutex> lk(mu);
+	auto& slot = table[(size_t(has_pair) * STRIDE + white_pawns) * STRIDE + black_pawns];
+	if (!slot) slot = std::make_unique<const Pawn_Slice_Manager>(has_pair, white_pawns, black_pawns);
+	return *slot;
+}
 
 Piece_Group::Piece_Group(Piece pc, size_t count) :
 	m_piece(pc),
-	m_num_pieces(count)
+	m_num_pieces(count),
+	m_num_legal_squares(possible_sq_nb(pc)),
+	m_first_square(possible_sq(pc, 0)),
+	m_table_size(BINOMIAL[m_num_legal_squares][count])
 {
-	std::vector<Square> ls;
-	const size_t n = possible_sq_nb(pc);
-	ls.reserve(n);
-	for (size_t i = 0; i < n; ++i)
-		ls.push_back(possible_sq(pc, i));
-	std::sort(ls.begin(), ls.end());
-	ls.erase(std::unique(ls.begin(), ls.end()), ls.end());
-	m_num_legal_squares = ls.size();
-
-	std::fill(std::begin(m_sq_to_pos), std::end(m_sq_to_pos), int8_t(-1));
-	for (size_t i = 0; i < m_num_legal_squares; ++i)
-	{
-		m_pos_to_sq[i] = ls[i];
-		m_sq_to_pos[ls[i]] = static_cast<int8_t>(i);
-	}
-
-	m_table_size = BINOMIAL[m_num_legal_squares][count];
 }
 
-Piece_Group::Placement_Index
-Piece_Group::compound_index(const Placement& list) const
+Piece_Group::Placement_Index Piece_Group::index_of(Bitboard b) const
 {
-	ASSERT(list.size() == m_num_pieces);
+	ASSERT(popcnt(b.bits()) == m_num_pieces);
 	uint32_t rank = 0;
-	for (size_t i = 0; i < m_num_pieces; ++i)
-	{
-		const int p = m_sq_to_pos[list[i]];
-		ASSERT(p >= 0);
-		rank += BINOMIAL[static_cast<size_t>(p)][i + 1];
-	}
+	for (size_t k = 1; b; ++k)
+		rank += BINOMIAL[b.pop_first_square() - m_first_square][k];
 	ASSERT(rank < m_table_size);
 	return static_cast<Placement_Index>(rank);
 }
 
-Piece_Group::Placement Piece_Group::squares(Placement_Index idx) const
+Bitboard Piece_Group::squares(Placement_Index idx) const
 {
 	ASSERT(idx < m_table_size);
 
@@ -288,21 +164,19 @@ Piece_Group::Placement Piece_Group::squares(Placement_Index idx) const
 		hi = p;
 	}
 
-	Placement pl;
+	Bitboard b = Bitboard::make_empty();
 	for (size_t i = 0; i < m_num_pieces; ++i)
-		pl.add_unsorted(m_pos_to_sq[pos[i]]);
-	return pl;
+		b |= static_cast<Square>(m_first_square + pos[i]);
+	return b;
 }
 
 // Must enumerate exactly as the generator's copy does: the slice ids are stored.
-King_Slice_Manager::King_Slice_Manager(Symmetry_Group s,
-                                       size_t white_rights, size_t black_rights) :
-	sym(s), has_castling(true), castling_rights{ white_rights, black_rights },
+King_Slice_Manager::King_Slice_Manager(size_t white_rights, size_t black_rights) :
+	has_castling(true), castling_rights{ white_rights, black_rights },
 	m_castling_group(std::make_shared<Castling_Group>(white_rights, black_rights))
 {
-	ASSERT(s == Symmetry_Group::NONE);
 	for (auto& e : pair_lookup)
-		e = { SLICE_NONE, Symmetry_Transform::IDENTITY, 0 };
+		e = { SLICE_NONE, 0, 0 };
 
 	m_free_king_stride = m_castling_group->both_kings_pinned() ? size_t(1) : size_t(SQUARE_NB);
 	const size_t n = m_castling_group->table_size();
@@ -312,28 +186,28 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s,
 	{
 		const Castling_Group::Index cidx = static_cast<Castling_Group::Index>(ci);
 
-		Slice_Rooks rooks{{ { SQ_END, SQ_END }, { SQ_END, SQ_END } }};
+		std::array<Bitboard, COLOR_NB> rooks{ Bitboard::make_empty(), Bitboard::make_empty() };
 		Square pinned_king[COLOR_NB] = { SQ_END, SQ_END };
 		Bitboard pinned = Bitboard::make_empty();
 		for (const Color c : { WHITE, BLACK })
 		{
 			if (castling_rights[c] == 0) continue;
 			pinned_king[c] = m_castling_group->king_square(cidx, c);
-			pinned |= square_bb(pinned_king[c]);
-			for (size_t i = 0; i < castling_rights[c]; ++i)
-			{
-				rooks[c][i] = m_castling_group->rook_square(cidx, c, i);
-				pinned |= square_bb(rooks[c][i]);
-			}
+			rooks[c] = m_castling_group->rooks(cidx, c);
+			pinned |= square_bb(pinned_king[c]) | rooks[c];
 		}
 
+#ifdef CHESSTB_INDEX_INVERSE
 		auto emit = [&](Square wk, Square bk, size_t free_slot) {
-			const int32_t sid = static_cast<int32_t>(kings_of_slice.size());
+			castling_slice_lookup[ci * m_free_king_stride + free_slot] = static_cast<int32_t>(num_slices++);
 			kings_of_slice.emplace_back(wk, bk);
 			castling_rooks_of_slice.push_back(rooks);
-			castling_index_of_slice.push_back(cidx);
-			castling_slice_lookup[ci * m_free_king_stride + free_slot] = sid;
 		};
+#else
+		auto emit = [&](Square, Square, size_t free_slot) {
+			castling_slice_lookup[ci * m_free_king_stride + free_slot] = static_cast<int32_t>(num_slices++);
+		};
+#endif
 
 		if (m_castling_group->both_kings_pinned())
 		{
@@ -346,67 +220,67 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s,
 		for (Square fk = SQ_A1; fk < SQ_END; fk = static_cast<Square>(fk + 1))
 		{
 			if (pinned.has_square(fk)) continue;
-			if (kings_adjacent(ksq, fk)) continue;
+			if (king_attacks(ksq).has_square(fk)) continue;
 			emit(pinned_color == WHITE ? ksq : fk,
 			     pinned_color == WHITE ? fk : ksq,
 			     static_cast<size_t>(fk));
 		}
 	}
-	num_slices = kings_of_slice.size();
 }
 
-King_Slice_Manager::King_Slice_Manager(Symmetry_Group s) : sym(s)
+King_Slice_Manager::King_Slice_Manager(Symmetry_Group sym)
 {
 	for (auto& e : pair_lookup)
-		e = { SLICE_NONE, Symmetry_Transform::IDENTITY, 0 };
+		e = { SLICE_NONE, 0, 0 };
+	const Bitboard anchors = sym == Symmetry_Group::DIHEDRAL_8 ? ANCHOR_TRIANGLE : ANCHOR_FILE_MIRROR;
 
 	for (Square wk = SQ_A1; wk < SQ_END; wk = static_cast<Square>(wk + 1))
 	{
-		if (!is_anchor_legal(sym, wk)) continue;
+		if (!anchors.has_square(wk)) continue;
 
 		for (Square bk = SQ_A1; bk < SQ_END; bk = static_cast<Square>(bk + 1))
 		{
 			if (bk == wk) continue;
-			if (kings_adjacent(wk, bk)) continue;
+			if (king_attacks(wk).has_square(bk)) continue;
 
-			if (sym == Symmetry_Group::DIHEDRAL_8 && sq_on_main_diag(wk))
+			if (sym == Symmetry_Group::DIHEDRAL_8 && MAIN_DIAG.has_square(wk))
 			{
 				const Square bk_d = sq_diag_mirror(bk);
 				if (bk_d != bk && static_cast<int>(bk) > static_cast<int>(bk_d))
 					continue;
 			}
 
-			const int32_t sid = static_cast<int32_t>(kings_of_slice.size());
+			const int32_t sid = static_cast<int32_t>(num_slices++);
+#ifdef CHESSTB_INDEX_INVERSE
 			kings_of_slice.emplace_back(wk, bk);
+#endif
 
 			const bool stab = (sym == Symmetry_Group::DIHEDRAL_8)
-			               && sq_on_main_diag(wk)
-			               && sq_on_main_diag(bk);
+			               && MAIN_DIAG.has_square(wk)
+			               && MAIN_DIAG.has_square(bk);
 
 			pair_lookup[static_cast<int>(wk) * SQUARE_NB + static_cast<int>(bk)] =
-				{ sid, Symmetry_Transform::IDENTITY, static_cast<uint8_t>(stab) };
+				{ sid, 0, static_cast<uint8_t>(stab) };
 		}
 	}
-	num_slices = kings_of_slice.size();
 
-	const int n_trans = num_transforms(sym);
+	const int n_trans = sym == Symmetry_Group::DIHEDRAL_8 ? 8 : 2;
 	for (Square wk = SQ_A1; wk < SQ_END; wk = static_cast<Square>(wk + 1))
 	{
 		for (Square bk = SQ_A1; bk < SQ_END; bk = static_cast<Square>(bk + 1))
 		{
 			Pair_Lookup& e = pair_lookup[static_cast<int>(wk) * SQUARE_NB + static_cast<int>(bk)];
 			if (e.slice_id != SLICE_NONE) continue;
-			if (wk == bk || kings_adjacent(wk, bk)) continue;
+			if (wk == bk || king_attacks(wk).has_square(bk)) continue;
 
-			for (int t_id = 0; t_id < n_trans; ++t_id)
+			for (uint8_t t = 0; t < n_trans; ++t)
 			{
-				const auto t = static_cast<Symmetry_Transform>(t_id);
-				const Square wk_t = apply_transform(wk, t);
-				const Square bk_t = apply_transform(bk, t);
+				const Square wk_t = apply_transform(square_bb(wk), t).peek_first_square();
+				const Square bk_t = apply_transform(square_bb(bk), t).peek_first_square();
 				const auto& look = pair_lookup[static_cast<int>(wk_t) * SQUARE_NB
 				                              + static_cast<int>(bk_t)];
 				if (look.slice_id != SLICE_NONE
-				    && look.transform == Symmetry_Transform::IDENTITY)
+				    && look.transform == 0)
 				{
 					e.slice_id = look.slice_id;
 					e.transform = t;
@@ -418,54 +292,45 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s) : sym(s)
 	}
 }
 
-Pawn_Slice_Manager::Pawn_Slice_Manager(
-	const Pair_Group* pair,
-	const Piece_Group* white_pawns,
-	const Piece_Group* black_pawns)
+Pawn_Slice_Manager::Pawn_Slice_Manager(bool has_pair, size_t white_pawns, size_t black_pawns)
 {
-	m_has_pawns = pair != nullptr || white_pawns != nullptr || black_pawns != nullptr;
-	m_pair_group = pair;
-	m_white_group = white_pawns;
-	m_black_group = black_pawns;
+	if (has_pair) m_pair_group = std::make_unique<const Pair_Group>();
+	if (white_pawns) m_white_group = std::make_unique<const Piece_Group>(piece_make(WHITE, PAWN), white_pawns);
+	if (black_pawns) m_black_group = std::make_unique<const Piece_Group>(piece_make(BLACK, PAWN), black_pawns);
+	const Pair_Group* pair = m_pair_group.get();
+	const Piece_Group* white = m_white_group.get();
+	const Piece_Group* black = m_black_group.get();
+	m_has_pawns = pair != nullptr || white != nullptr || black != nullptr;
 	m_pair_table_size  = pair ? pair->table_size() : 1;
-	m_white_table_size = white_pawns ? white_pawns->table_size() : 1;
-	m_black_table_size = black_pawns ? black_pawns->table_size() : 1;
+	m_white_table_size = white ? white->table_size() : 1;
+	m_black_table_size = black ? black->table_size() : 1;
 	m_num_cartesian_slices = m_pair_table_size * m_white_table_size * m_black_table_size;
+	if (!pair)
+	{
+		m_white_free_size = BINOMIAL[PAWN_SQUARE_NB - black_pawns][white_pawns];
+		m_num_slices = m_black_table_size * m_white_free_size;
+		return;
+	}
+#ifdef CHESSTB_INDEX_INVERSE
 	if (m_pair_table_size > 1)
 		m_pair_table_size_div = Divider<uint64_t>(m_pair_table_size);
 	if (m_white_table_size > 1)
 		m_white_table_size_div = Divider<uint64_t>(m_white_table_size);
+#endif
 
-	auto placements_of = [](const Piece_Group* g,
-	                        std::vector<Piece_Group::Placement>& out_pl,
-	                        std::vector<Bitboard>& out_occ) {
-		if (g == nullptr)
-		{
-			out_pl.emplace_back();
-			out_occ.push_back(Bitboard::make_empty());
-			return;
-		}
-		out_pl.reserve(g->table_size());
-		out_occ.reserve(g->table_size());
-		for (size_t i = 0; i < g->table_size(); ++i)
-		{
-			out_pl.push_back(g->squares(static_cast<Piece_Group::Placement_Index>(i)));
-			Bitboard occ = Bitboard::make_empty();
-			const auto& pl = out_pl.back();
-			for (size_t k = 0; k < pl.size(); ++k) occ |= square_bb(pl[k]);
-			out_occ.push_back(occ);
-		}
+	auto placements_of = [](const Piece_Group* g) {
+		std::vector<Bitboard> out;
+		for (size_t i = 0; i < (g ? g->table_size() : 1); ++i)
+			out.push_back(g ? g->squares(static_cast<Piece_Group::Placement_Index>(i))
+			                : Bitboard::make_empty());
+		return out;
 	};
-	std::vector<Piece_Group::Placement> white_pl, black_pl;
-	std::vector<Bitboard> white_occ, black_occ;
-	placements_of(m_white_group, white_pl, white_occ);
-	placements_of(m_black_group, black_pl, black_occ);
 
-	// The bitmap is shared by rank (compose) and the reverse storage map.
-	// Build it by bitsets, then enumerate its set bits once in storage order.
+	// The bitmap ranks cells for lookup (and, for the tools, the
+	// reverse storage map). Build it by bitsets, then count the survivors.
 	m_rank_blocks.assign((m_num_cartesian_slices + 63) / 64, Rank_Block{});
 	m_num_slices = 0;
-	build_pawn_slice_bits(pair, white_pl, black_pl, white_occ, black_occ,
+	build_pawn_slice_bits(pair, placements_of(white), placements_of(black),
 		[&](size_t cart, uint64_t bits) {
 			if (!bits) return;
 			m_num_slices += popcnt(bits);
@@ -474,94 +339,69 @@ Pawn_Slice_Manager::Pawn_Slice_Manager(
 			if (shift && word + 1 < m_rank_blocks.size())
 				m_rank_blocks[word + 1].bits |= bits >> (64 - shift);
 		});
-	m_cartesian_by_storage.reserve(m_num_slices);
 	int32_t running = 0;
-	for (size_t word = 0; word < m_rank_blocks.size(); ++word)
+	for (Rank_Block& block : m_rank_blocks)
 	{
-		Rank_Block& block = m_rank_blocks[word];
 		block.survivors_before = running;
 		running += static_cast<int32_t>(popcnt(block.bits));
-		uint64_t bits = block.bits;
-		while (bits)
-			m_cartesian_by_storage.push_back(static_cast<int32_t>(word * 64 + pop_first_bit(bits)));
 	}
 	ASSERT(static_cast<size_t>(running) == m_num_slices);
+#ifdef CHESSTB_INDEX_INVERSE
+	m_cartesian_by_storage.reserve(m_num_slices);
+	for (size_t word = 0; word < m_rank_blocks.size(); ++word)
+		for (uint64_t bits = m_rank_blocks[word].bits; bits;)
+			m_cartesian_by_storage.push_back(static_cast<int32_t>(word * 64 + pop_first_bit(bits)));
 	ASSERT(m_cartesian_by_storage.size() == m_num_slices);
+#endif
 }
 
-Pawn_Slice_Manager::Decomposed
-Pawn_Slice_Manager::decompose(int32_t slice_id) const
+#ifdef CHESSTB_INDEX_INVERSE
+void Pawn_Slice_Manager::pawns_of(int32_t slice_id, Bitboard& white, Bitboard& black) const
 {
 	ASSERT(slice_id >= 0 && static_cast<size_t>(slice_id) < m_num_slices);
-	Decomposed d;
-	if (!m_has_pawns) { d.pair_idx = 0; d.white_idx = 0; d.black_idx = 0; return d; }
+	white = black = Bitboard::make_empty();
+	if (!m_has_pawns) return;
+	if (!m_pair_group)
+	{
+		const size_t b_idx = static_cast<size_t>(slice_id) / m_white_free_size;
+		const size_t rank = static_cast<size_t>(slice_id) - b_idx * m_white_free_size;
+		if (m_black_group) black = m_black_group->squares(static_cast<Piece_Group::Placement_Index>(b_idx));
+		white = free_square_unrank(rank, m_white_group ? m_white_group->size() : 0, black);
+		return;
+	}
 	size_t rem = static_cast<size_t>(m_cartesian_by_storage[slice_id]);
-	if (m_pair_table_size > 1)
-	{
-		const size_t q = rem / m_pair_table_size_div;
-		d.pair_idx = static_cast<Pair_Group::Index>(rem - q * m_pair_table_size);
-		rem = q;
-	}
-	else
-	{
-		d.pair_idx = 0;
-	}
-	if (m_white_table_size > 1)
-	{
-		const size_t q = rem / m_white_table_size_div;
-		d.white_idx = static_cast<Piece_Group::Placement_Index>(rem - q * m_white_table_size);
-		rem = q;
-	}
-	else
-	{
-		d.white_idx = 0;
-	}
-	d.black_idx = static_cast<Piece_Group::Placement_Index>(rem);
-	return d;
+	const size_t q = rem / m_pair_table_size_div;
+	const auto pair_idx = static_cast<Pair_Group::Index>(rem - q * m_pair_table_size);
+	rem = q;
+	const size_t b_idx = m_white_table_size > 1 ? rem / m_white_table_size_div : rem;
+	const size_t w_idx = rem - b_idx * m_white_table_size;
+	if (m_white_group) white = m_white_group->squares(static_cast<Piece_Group::Placement_Index>(w_idx));
+	if (m_black_group) black = m_black_group->squares(static_cast<Piece_Group::Placement_Index>(b_idx));
+	ASSERT(!(white & m_pair_group->white_square(pair_idx)) && !(black & m_pair_group->black_square(pair_idx)));
+	white |= m_pair_group->white_square(pair_idx);
+	black |= m_pair_group->black_square(pair_idx);
 }
+#endif
 
-int32_t Pawn_Slice_Manager::compose(
-	Pair_Group::Index pair,
-	Piece_Group::Placement_Index w,
-	Piece_Group::Placement_Index b) const
+int32_t Pawn_Slice_Manager::lookup(Square pair_white_sq, Square pair_black_sq,
+                                   Bitboard white, Bitboard black) const
 {
-	if (!m_has_pawns) return 0;
-	const size_t cart = static_cast<size_t>(pair)
-	                  + static_cast<size_t>(w) * m_pair_table_size
-	                  + static_cast<size_t>(b) * m_pair_table_size * m_white_table_size;
+	const Piece_Group::Placement_Index b_idx = m_black_group ? m_black_group->index_of(black) : 0;
+	if (!m_pair_group)
+	{
+		const size_t rank = free_square_rank(white, black);
+		ASSERT(rank < m_white_free_size);
+		return static_cast<int32_t>(b_idx * m_white_free_size + rank);
+	}
+
+	// With a pair: the cell's rank among the bitmap's survivors.
+	const Piece_Group::Placement_Index w_idx = m_white_group ? m_white_group->index_of(white) : 0;
+	const size_t cart = static_cast<size_t>(m_pair_group->index_of(pair_white_sq, pair_black_sq))
+	                  + static_cast<size_t>(w_idx) * m_pair_table_size
+	                  + static_cast<size_t>(b_idx) * m_pair_table_size * m_white_table_size;
 	ASSERT(cart < m_num_cartesian_slices);
 	ASSERT(cartesian_survives(cart));
 	return storage_of_cartesian(cart);
-}
-
-int32_t Pawn_Slice_Manager::lookup_from_squares(
-	Square pair_white_sq, Square pair_black_sq,
-	Const_Span<Square> white_pawn_squares,
-	Const_Span<Square> black_pawn_squares) const
-{
-	if (!m_has_pawns) return 0;
-
-	const Pair_Group::Index pair_idx =
-		m_pair_group ? m_pair_group->index_of(pair_white_sq, pair_black_sq) : 0;
-
-	Piece_Group::Placement_Index w_idx = 0;
-	Piece_Group::Placement_Index b_idx = 0;
-
-	if (m_white_group)
-	{
-		Piece_Group::Placement pl;
-		for (size_t i = 0; i < white_pawn_squares.size(); ++i)
-			pl.add(white_pawn_squares[i]);
-		w_idx = m_white_group->compound_index(pl);
-	}
-	if (m_black_group)
-	{
-		Piece_Group::Placement pl;
-		for (size_t i = 0; i < black_pawn_squares.size(); ++i)
-			pl.add(black_pawn_squares[i]);
-		b_idx = m_black_group->compound_index(pl);
-	}
-	return compose(pair_idx, w_idx, b_idx);
 }
 
 bool Position_Index_Config::try_init()
@@ -573,57 +413,41 @@ bool Position_Index_Config::try_init()
 	if (total_pawns > MAX_TOTAL_PAWNS)
 		return false;
 
+#ifdef CHESSTB_INDEX_INVERSE
 	for (size_t i = 0; i < PIECE_NB; ++i)
 		m_piece_counts_cached[i] = static_cast<int8_t>(counts[i]);
+#endif
 	const Symmetry_Group symmetry = pick_symmetry(*this);
 	ASSERT(has_castling() == (symmetry == Symmetry_Group::NONE));
 	m_king_slice_manager = has_castling()
 		? &castling_slice_mgr(castling_rights(WHITE), castling_rights(BLACK))
 	                                    : &slice_mgr_for(symmetry);
 
-	for (size_t i = 0; i < PIECE_CLASS_NB; ++i)
-	{
-		m_groups_owned[i].reset();
-		m_groups[i] = nullptr;
-	}
-
-	auto make_group = [&](Piece_Class pclass, Piece pc, size_t count) {
-		m_groups_owned[pclass] = std::make_unique<Piece_Group>(pc, count);
-		m_groups[pclass] = m_groups_owned[pclass].get();
-	};
-
+	// Pawns are the pawn slice manager's.
+	constexpr std::pair<Piece_Type, Piece_Type_Class> TYPES[] = {
+		{ QUEEN, QUEENS }, { ROOK, ROOKS }, { BISHOP, BISHOPS }, { KNIGHT, KNIGHTS } };
 	for (Color c : { WHITE, BLACK })
-	{
-		for (Piece_Type pt : { QUEEN, ROOK, BISHOP, KNIGHT, PAWN })
+		for (const auto& [pt, ptcl] : TYPES)
 		{
 			const Piece pc = piece_make(c, pt);
-			const size_t n = counts[pc];
-			if (n == 0) continue;
-			const Piece_Type_Class ptcl =
-				pt == QUEEN  ? QUEENS  :
-				pt == ROOK   ? ROOKS   :
-				pt == BISHOP ? BISHOPS :
-				pt == KNIGHT ? KNIGHTS :
-				                PAWNS;
-			const Piece_Class pcl = make_piece_class(c, ptcl);
-			make_group(pcl, pc, n);
+			m_groups[make_piece_class(c, ptcl)] =
+				counts[pc] ? std::make_unique<const Piece_Group>(pc, counts[pc]) : nullptr;
 		}
-	}
 
+#ifdef CHESSTB_INDEX_INVERSE
 	if (has_opposing_pair())
 	{
-		m_pair_group = std::make_unique<Pair_Group>();
 		m_piece_counts_cached[WHITE_PAWN] += 1;
 		m_piece_counts_cached[BLACK_PAWN] += 1;
 	}
+#endif
 
+#ifdef CHESSTB_INDEX_INVERSE
 	for (const Color c : { WHITE, BLACK })
 		m_piece_counts_cached[piece_make(c, ROOK)] += static_cast<int8_t>(castling_rights(c));
+#endif
 
-	m_pawn_slice_manager = std::make_unique<Pawn_Slice_Manager>(
-		pair_group(),
-		m_groups[WHITE_PAWNS],
-		m_groups[BLACK_PAWNS]);
+	m_pawn_slice_manager = &pawn_slice_mgr(has_opposing_pair(), counts[WHITE_PAWN], counts[BLACK_PAWN]);
 	m_num_pawn_slices = m_pawn_slice_manager->num_slices();
 
 	m_num_populated_classes = 0;
@@ -631,7 +455,6 @@ bool Position_Index_Config::try_init()
 	for (Piece_Class i = PIECE_CLASS_START; i < PIECE_CLASS_END; ++i)
 	{
 		if (m_groups[i] == nullptr) continue;
-		if (i == WHITE_PAWNS || i == BLACK_PAWNS) continue;
 		m_populated_classes[m_num_populated_classes++] = i;
 		m_weights[i] = w;
 		const size_t group_size = m_groups[i]->table_size();
@@ -645,16 +468,18 @@ bool Position_Index_Config::try_init()
 	m_within_slice_size = w;
 
 	const size_t num_king_slices = m_king_slice_manager->num_slices;
-	m_pawn_slice_stride = num_king_slices * m_within_slice_size;
+	m_pawn_slice_stride = uint64_t(num_king_slices) * m_within_slice_size;
 	if (m_within_slice_size != 0 && m_pawn_slice_stride / m_within_slice_size != num_king_slices)
 		return false;
 
-	const size_t total = m_num_pawn_slices * m_pawn_slice_stride;
+	const uint64_t total = m_num_pawn_slices * m_pawn_slice_stride;
 	if (m_pawn_slice_stride != 0 && total / m_pawn_slice_stride != m_num_pawn_slices)
 		return false;
 	if (total > MAX_NUM_POSITIONS)
 		return false;
+#ifdef CHESSTB_INDEX_INVERSE
 	m_num_positions = total;
+#endif
 	return true;
 }
 
@@ -665,11 +490,12 @@ Position_Index_Config::Position_Index_Config(const Piece_Config& ps) :
 		throw std::runtime_error("Position_Index_Config: configuration too large to materialize");
 }
 
+#ifdef CHESSTB_INDEX_INVERSE
 void Position_Index_Config::decompose_board_index(
 	Board_Index pos,
 	Out_Param<Decomposed_Board_Index> idx) const
 {
-	size_t p = static_cast<size_t>(pos);
+	uint64_t p = pos;
 	if (m_num_pawn_slices > 1)
 	{
 		const size_t q = p / m_pawn_slice_stride;
@@ -691,7 +517,7 @@ void Position_Index_Config::decompose_board_index(
 		idx->king_slice_id = static_cast<int32_t>(p);
 		p = 0;
 	}
-	size_t within = p;
+	size_t within = static_cast<size_t>(p);
 	idx->within.fill(Piece_Group::Placement_Index(0));
 	for (ptrdiff_t i = m_num_populated_classes - 1; i >= 1; --i)
 	{
@@ -724,96 +550,41 @@ bool Position_Index_Config::fill_board(
 	Bitboard white_occ = Bitboard::make_empty();
 	Bitboard black_occ = Bitboard::make_empty();
 
-	const Bitboard wk_bb = square_bb(wk);
-	const Bitboard bk_bb = square_bb(bk);
-	board->m_squares[wk] = WHITE_KING;
-	board->m_squares[bk] = BLACK_KING;
-	board->m_pieces[WHITE_KING] = wk_bb;
-	board->m_pieces[BLACK_KING] = bk_bb;
-	white_occ |= wk_bb;
-	black_occ |= bk_bb;
+	// `pc` on the squares of `bb`; false if one is taken.
+	auto place = [&](Piece pc, Bitboard bb) {
+		if (bb & (white_occ | black_occ)) return false;
+		for (Bitboard t = bb; t;) board->m_squares[t.pop_first_square()] = pc;
+		board->m_pieces[pc] |= bb;
+		(piece_color(pc) == WHITE ? white_occ : black_occ) |= bb;
+		return true;
+	};
+	place(WHITE_KING, square_bb(wk));
+	place(BLACK_KING, square_bb(bk));
 
-	const Pawn_Slice_Manager& psm = pawn_slice_manager();
-	if (psm.has_pawns())
-	{
-		const auto pd = psm.decompose(index.pawn_slice_id);
-		auto place_pawns = [&](Piece_Class c, Piece_Group::Placement_Index idx,
-		                       Bitboard& color_occ) -> bool {
-			if (!is_populated(c)) return true;
-			const Piece_Group& g = group(c);
-			const auto& placement = g.squares(idx);
-			const Piece pc = g.piece();
-			Bitboard bb = Bitboard::make_empty();
-			for (size_t k = 0; k < placement.size(); ++k)
-			{
-				const Square sq = placement[k];
-				if (!board->is_empty(sq)) return false;
-				board->m_squares[sq] = pc;
-				bb |= square_bb(sq);
-			}
-			board->m_pieces[pc] = bb;
-			color_occ |= bb;
-			return true;
-		};
-		if (!place_pawns(WHITE_PAWNS, pd.white_idx, white_occ)) return false;
-		if (!place_pawns(BLACK_PAWNS, pd.black_idx, black_occ)) return false;
-
-		if (m_pair_group)
-		{
-			const Square pw = m_pair_group->white_square(pd.pair_idx);
-			const Square pb = m_pair_group->black_square(pd.pair_idx);
-			if (!board->is_empty(pw) || !board->is_empty(pb)) return false;
-			board->m_squares[pw] = WHITE_PAWN;
-			board->m_squares[pb] = BLACK_PAWN;
-			const Bitboard pwbb = square_bb(pw);
-			const Bitboard pbbb = square_bb(pb);
-			board->m_pieces[WHITE_PAWN] |= pwbb;
-			board->m_pieces[BLACK_PAWN] |= pbbb;
-			white_occ |= pwbb;
-			black_occ |= pbbb;
-		}
-	}
+	Bitboard white_pawns, black_pawns;
+	pawn_slice_manager().pawns_of(index.pawn_slice_id, white_pawns, black_pawns);
+	if (!place(WHITE_PAWN, white_pawns) || !place(BLACK_PAWN, black_pawns)) return false;
 
 	for (size_t i = 0; i < m_num_populated_classes; ++i)
 	{
-		const Piece_Class c = m_populated_classes[i];
-		const Piece_Group& g = group(c);
-		const auto& placement = g.squares(index.within[c]);
-		const Piece pc = g.piece();
-		Bitboard bb = Bitboard::make_empty();
-		for (size_t k = 0; k < placement.size(); ++k)
-		{
-			const Square sq = placement[k];
-			if (!board->is_empty(sq)) return false;
-			board->m_squares[sq] = pc;
-			bb |= square_bb(sq);
-		}
-		board->m_pieces[pc] = bb;
-		Bitboard& color_occ = (piece_color(pc) == WHITE) ? white_occ : black_occ;
-		color_occ |= bb;
+		const Piece_Group& g = group(m_populated_classes[i]);
+		if (!place(g.piece(), g.squares(index.within[m_populated_classes[i]]))) return false;
 	}
 
 	board->m_castling = NO_CASTLING;
 
 	if (has_castling())
 	{
-		const auto& ksm = *m_king_slice_manager;
-		const Square wk = ksm.kings_of_slice[index.king_slice_id].first;
-		const Square bk = ksm.kings_of_slice[index.king_slice_id].second;
 		for (const Color cc : { WHITE, BLACK })
 		{
 			if (castling_rights(cc) == 0) continue;
-			const Piece rook = piece_make(cc, ROOK);
-			const Square castling_king = (cc == WHITE) ? wk : bk;
-			for (const Square rook_sq : castling_rook_squares(index.king_slice_id, cc))
+			const Bitboard rooks = castling_rooks(index.king_slice_id, cc);
+			if (!place(piece_make(cc, ROOK), rooks)) return false;
+			const File king_file = sq_file(cc == WHITE ? wk : bk);
+			for (Bitboard t = rooks; t;)
 			{
-				if (!board->is_empty(rook_sq)) return false;
-				const Bitboard rook_bb = square_bb(rook_sq);
-				board->m_squares[rook_sq] = rook;
-				board->m_pieces[rook] |= rook_bb;
-				((cc == WHITE) ? white_occ : black_occ) |= rook_bb;
-				board->set_castling_right(cc, sq_file(rook_sq) > sq_file(castling_king),
-				                          rook_sq);
+				const Square rook_sq = t.pop_first_square();
+				board->set_castling_right(cc, sq_file(rook_sq) > king_file, rook_sq);
 			}
 		}
 	}
@@ -825,101 +596,100 @@ bool Position_Index_Config::fill_board(
 	            sizeof(board->m_piece_counts));
 	return true;
 }
+#endif
 
 Board_Index board_index_of_position(
 	const Position_Index_Config& cfg,
 	const Index_Storage_Layout& layout,
 	const Position& pos)
 {
-	auto placements = placements_from_position(cfg, pos);
-	const bool has_castling = cfg.has_castling();
-	if (!has_castling)
-		canonicalize_placements(inout_param(placements), cfg);
+	const size_t n = cfg.num_populated_classes();
+	const Piece_Class* classes = cfg.populated_classes();
 
-	const Square wk = placements[WHITE_KINGS][0];
-	const Square bk = placements[BLACK_KINGS][0];
+	Bitboard boards[PIECE_CLASS_NB];
+	for (size_t i = 0; i < n; ++i)
+		boards[classes[i]] = pos.piece_bb(cfg.group(classes[i]).piece());
+	Bitboard white_pawns = pos.piece_bb(WHITE_PAWN), black_pawns = pos.piece_bb(BLACK_PAWN);
 
-	Square rooks[COLOR_NB][Castling_Group::MAX_RIGHTS];
-	size_t num_rooks[COLOR_NB] = { 0, 0 };
-	if (has_castling)
+	const Square wk = pos.king_square(WHITE), bk = pos.king_square(BLACK);
+	int32_t king_slice_id;
+	Piece_Group::Placement_Index idx[PIECE_CLASS_NB];
+	if (!cfg.has_castling())
 	{
-		for (const Color c : { WHITE, BLACK })
+		// The symmetry that takes the kings to their slice's squares, applied
+		// to every man.
+		const auto& look = cfg.king_slice_manager().lookup(wk, bk);
+		king_slice_id = look.slice_id;
+		if (king_slice_id == SLICE_NONE) return BOARD_INDEX_NONE;
+		if (look.transform)
 		{
-			for (const bool h_side : { false, true })
-				if (pos.can_castle(c, h_side))
-				{
-					if (num_rooks[c] == Castling_Group::MAX_RIGHTS) return BOARD_INDEX_NONE;
-					rooks[c][num_rooks[c]++] = pos.castling_rook_square(c, h_side);
-				}
-			if (num_rooks[c] == 2 && rooks[c][1] < rooks[c][0])
-				std::swap(rooks[c][0], rooks[c][1]);
-			if (num_rooks[c] != cfg.castling_rights(c)) return BOARD_INDEX_NONE;
-			if (num_rooks[c] == 0) continue;
-			const Piece_Class rook_class = make_piece_class(c, ROOKS);
-			if (cfg.is_populated(rook_class))
-				for (size_t i = 0; i < num_rooks[c]; ++i)
-					placements[rook_class].remove_square(rooks[c][i]);
-			else
-				placements[rook_class].clear();
+			for (size_t i = 0; i < n; ++i)
+				boards[classes[i]] = apply_transform(boards[classes[i]], look.transform);
+			white_pawns = apply_transform(white_pawns, look.transform);
+			black_pawns = apply_transform(black_pawns, look.transform);
 		}
-	}
+		for (size_t i = 0; i < n; ++i)
+			idx[classes[i]] = cfg.group(classes[i]).index_of(boards[classes[i]]);
 
-	const int32_t king_slice_id = has_castling
-		? cfg.king_slice_manager().castling_slice_of(
-			wk, bk,
-			Const_Span<Square>(rooks[WHITE], num_rooks[WHITE]),
-			Const_Span<Square>(rooks[BLACK], num_rooks[BLACK]))
-		: cfg.king_slice_manager().lookup(wk, bk).slice_id;
-	if (king_slice_id == SLICE_NONE)
-		return BOARD_INDEX_NONE;
-
-	Decomposed_Board_Index dix;
-	dix.king_slice_id = king_slice_id;
-
-	if (cfg.pawn_slice_manager().has_pawns())
-	{
-		const auto& w_pl = placements[WHITE_PAWNS];
-		const auto& b_pl = placements[BLACK_PAWNS];
-
-		Square pair_w = SQ_END, pair_b = SQ_END;
-		Square free_w[Piece_Group::MAX_PIECE_GROUP_SIZE];
-		Square free_b[Piece_Group::MAX_PIECE_GROUP_SIZE];
-		size_t nfw = 0, nfb = 0;
-
-		if (cfg.pair_group())
+		// Both kings on the diagonal: the a1-h8 mirror keeps their slice, so
+		// the men take whichever side ranks lower.
+		if (look.has_diag_stabilizer)
 		{
-			Pair_Group::canonical_pair(
-				Const_Span<Square>(w_pl.begin(), w_pl.size()),
-				Const_Span<Square>(b_pl.begin(), b_pl.size()), pair_w, pair_b);
-			for (size_t i = 0; i < w_pl.size(); ++i)
-				if (w_pl[i] != pair_w) free_w[nfw++] = w_pl[i];
-			for (size_t i = 0; i < b_pl.size(); ++i)
-				if (b_pl[i] != pair_b) free_b[nfb++] = b_pl[i];
+			Piece_Group::Placement_Index alt[PIECE_CLASS_NB];
+			size_t within_cur = 0, within_alt = 0;
+			for (size_t i = 0; i < n; ++i)
+			{
+				const Piece_Class c = classes[i];
+				alt[c] = cfg.group(c).index_of(boards[c].mirror_diag());
+				within_cur += cfg.weight(c) * idx[c];
+				within_alt += cfg.weight(c) * alt[c];
+			}
+			if (within_alt < within_cur)
+				for (size_t i = 0; i < n; ++i) idx[classes[i]] = alt[classes[i]];
 		}
-		else
-		{
-			for (size_t i = 0; i < w_pl.size(); ++i) free_w[nfw++] = w_pl[i];
-			for (size_t i = 0; i < b_pl.size(); ++i) free_b[nfb++] = b_pl[i];
-		}
-
-		dix.pawn_slice_id = cfg.pawn_slice_manager().lookup_from_squares(
-			pair_w, pair_b,
-			Const_Span<Square>(free_w, nfw),
-			Const_Span<Square>(free_b, nfb));
 	}
 	else
 	{
-		dix.pawn_slice_id = 0;
+		// A castling rook is not in its class, which holds only the free ones.
+		const Bitboard rooks[COLOR_NB] = { pos.castling_rooks(WHITE), pos.castling_rooks(BLACK) };
+		for (const Color c : { WHITE, BLACK })
+		{
+			const Piece_Class rook_class = make_piece_class(c, ROOKS);
+			if (cfg.is_populated(rook_class)) boards[rook_class] &= ~rooks[c];
+		}
+		king_slice_id = cfg.king_slice_manager().castling_slice_of(wk, bk, rooks[WHITE], rooks[BLACK]);
+		if (king_slice_id == SLICE_NONE) return BOARD_INDEX_NONE;
+		for (size_t i = 0; i < n; ++i)
+			idx[classes[i]] = cfg.group(classes[i]).index_of(boards[classes[i]]);
 	}
 
-	for (size_t i = 0; i < cfg.num_populated_classes(); ++i)
+	int32_t pawn_slice_id = 0;
+	if (cfg.pawn_slice_manager().has_pawns())
 	{
-		const Piece_Class c = cfg.populated_classes()[i];
-		dix.within[c] = cfg.group(c).compound_index(placements[c]);
+		Square pair_w = SQ_END, pair_b = SQ_END;
+		if (cfg.has_opposing_pair())
+		{
+			Pair_Group::canonical_pair(white_pawns, black_pawns, pair_w, pair_b);
+			white_pawns ^= pair_w;
+			black_pawns ^= pair_b;
+		}
+		pawn_slice_id = cfg.pawn_slice_manager().lookup(pair_w, pair_b, white_pawns, black_pawns);
 	}
-	return cfg.compose_board_index(dix, layout);
+
+	// Within the slice, the classes in storage order, the first varying fastest.
+	size_t within = 0;
+	size_t w = 1;
+	for (size_t i = 0; i < layout.n; ++i)
+	{
+		within += w * idx[layout.order[i]];
+		w *= layout.radix[i];
+	}
+	return static_cast<Board_Index>(static_cast<uint64_t>(pawn_slice_id) * cfg.pawn_slice_stride()
+	                                + static_cast<uint64_t>(king_slice_id) * cfg.within_slice_size()
+	                                + within);
 }
 
+#ifdef CHESSTB_INDEX_INVERSE
 bool position_from_index(
 	const Position_Index_Config& cfg,
 	Board_Index idx,
@@ -934,3 +704,4 @@ bool position_from_index(
 	pos->set_turn(turn);
 	return true;
 }
+#endif

@@ -10,50 +10,11 @@
 
 namespace {
 
-bool sq_on_main_diag(Square sq)
-{
-	return static_cast<int>(sq_file(sq)) == static_cast<int>(sq_rank(sq));
-}
-
-bool kings_adjacent(Square a, Square b)
-{
-	return king_attacks(a).has_square(b);
-}
-
-Const_Span<Square> anchor_legal_squares(Symmetry_Group sym)
-{
-	switch (sym)
-	{
-		case Symmetry_Group::DIHEDRAL_8:
-			return Const_Span<Square>(ANCHOR_TRIANGLE_SQUARES, std::size(ANCHOR_TRIANGLE_SQUARES));
-		case Symmetry_Group::FILE_MIRROR:
-			return Const_Span<Square>(ANCHOR_FILE_MIRROR_SQUARES, std::size(ANCHOR_FILE_MIRROR_SQUARES));
-		case Symmetry_Group::NONE:
-			break;
-	}
-	ASSUME(false);
-	return Const_Span<Square>(ANCHOR_FILE_MIRROR_SQUARES, size_t(0));
-}
-
-bool is_anchor_legal(Symmetry_Group sym, Square wk)
-{
-	const auto sqs = anchor_legal_squares(sym);
-	for (size_t i = 0; i < sqs.size(); ++i)
-		if (sqs[i] == wk) return true;
-	return false;
-}
-
-int num_transforms(Symmetry_Group sym)
-{
-	switch (sym)
-	{
-		case Symmetry_Group::DIHEDRAL_8:  return 8;
-		case Symmetry_Group::FILE_MIRROR: return 2;
-		case Symmetry_Group::NONE:        break;
-	}
-	ASSUME(false);
-	return 1;
-}
+// White king squares of the slices: files a-d under the file mirror, the
+// a1-d1-d4 triangle under all eight symmetries.
+constexpr Bitboard ANCHOR_FILE_MIRROR(0x0F0F0F0F0F0F0F0FULL);
+constexpr Bitboard ANCHOR_TRIANGLE(0x00000000080C0E0FULL);
+constexpr Bitboard MAIN_DIAG(0x8040201008040201ULL);
 
 }  // namespace
 
@@ -65,7 +26,7 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s,
 	ASSERT(s == Symmetry_Group::NONE);
 	m_free_king_stride = m_castling_group->both_kings_pinned() ? size_t(1) : size_t(SQUARE_NB);
 	for (auto& e : pair_lookup)
-		e = { SLICE_NONE, Symmetry_Transform::IDENTITY, 0 };
+		e = { SLICE_NONE, 0, 0 };
 	build_castling_slices();
 	build_castling_neighbor_table();
 }
@@ -79,19 +40,15 @@ void King_Slice_Manager::build_castling_slices()
 	{
 		const Castling_Group::Index cidx = static_cast<Castling_Group::Index>(ci);
 
-		Slice_Rooks rooks{{ { SQ_END, SQ_END }, { SQ_END, SQ_END } }};
+		Slice_Rooks rooks{ Bitboard::make_empty(), Bitboard::make_empty() };
 		Square pinned_king[COLOR_NB] = { SQ_END, SQ_END };
 		Bitboard pinned = Bitboard::make_empty();
 		for (const Color c : { WHITE, BLACK })
 		{
 			if (castling_rights[c] == 0) continue;
 			pinned_king[c] = m_castling_group->king_square(cidx, c);
-			pinned |= square_bb(pinned_king[c]);
-			for (size_t i = 0; i < castling_rights[c]; ++i)
-			{
-				rooks[c][i] = m_castling_group->rook_square(cidx, c, i);
-				pinned |= square_bb(rooks[c][i]);
-			}
+			rooks[c] = m_castling_group->rooks(cidx, c);
+			pinned |= square_bb(pinned_king[c]) | rooks[c];
 		}
 
 		auto emit = [&](Square wk, Square bk, size_t free_slot) {
@@ -114,7 +71,7 @@ void King_Slice_Manager::build_castling_slices()
 		for (Square fk = SQ_A1; fk < SQ_END; fk = static_cast<Square>(fk + 1))
 		{
 			if (pinned.has_square(fk)) continue;
-			if (kings_adjacent(ksq, fk)) continue;
+			if (king_attacks(ksq).has_square(fk)) continue;
 			emit(pinned_color == WHITE ? ksq : fk,
 			     pinned_color == WHITE ? fk : ksq,
 			     static_cast<size_t>(fk));
@@ -159,21 +116,22 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s) : sym(s)
 {
 	ASSERT(s != Symmetry_Group::NONE);
 	for (auto& e : pair_lookup)
-		e = { SLICE_NONE, Symmetry_Transform::IDENTITY, 0 };
+		e = { SLICE_NONE, 0, 0 };
+	const Bitboard anchors = sym == Symmetry_Group::DIHEDRAL_8 ? ANCHOR_TRIANGLE : ANCHOR_FILE_MIRROR;
 
 	// Pass 1: enumerate canonical pairs. WK in fundamental domain, kings not
 	// adjacent, and (DIHEDRAL_8 + WK on main diag) tiebreak picks smaller BK
 	// vs diag-mirror(BK).
 	for (Square wk = SQ_A1; wk < SQ_END; wk = static_cast<Square>(wk + 1))
 	{
-		if (!is_anchor_legal(sym, wk)) continue;
+		if (!anchors.has_square(wk)) continue;
 
 		for (Square bk = SQ_A1; bk < SQ_END; bk = static_cast<Square>(bk + 1))
 		{
 			if (bk == wk) continue;
-			if (kings_adjacent(wk, bk)) continue;
+			if (king_attacks(wk).has_square(bk)) continue;
 
-			if (sym == Symmetry_Group::DIHEDRAL_8 && sq_on_main_diag(wk))
+			if (sym == Symmetry_Group::DIHEDRAL_8 && MAIN_DIAG.has_square(wk))
 			{
 				const Square bk_d = sq_diag_mirror(bk);
 				if (bk_d != bk && static_cast<int>(bk) > static_cast<int>(bk_d))
@@ -184,32 +142,31 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s) : sym(s)
 			kings_of_slice.emplace_back(wk, bk);
 
 			const bool stab = (sym == Symmetry_Group::DIHEDRAL_8)
-			               && sq_on_main_diag(wk)
-			               && sq_on_main_diag(bk);
+			               && MAIN_DIAG.has_square(wk)
+			               && MAIN_DIAG.has_square(bk);
 			slice_has_stabilizer.push_back(stab ? 1 : 0);
 
 			pair_lookup[static_cast<int>(wk) * SQUARE_NB + static_cast<int>(bk)] =
-				{ sid, Symmetry_Transform::IDENTITY, static_cast<uint8_t>(stab) };
+				{ sid, 0, static_cast<uint8_t>(stab) };
 		}
 	}
 	num_slices = kings_of_slice.size();
 
-	const int n_trans = num_transforms(sym);
+	const int n_trans = sym == Symmetry_Group::DIHEDRAL_8 ? 8 : 2;
 	for (Square wk = SQ_A1; wk < SQ_END; wk = static_cast<Square>(wk + 1))
 	{
 		for (Square bk = SQ_A1; bk < SQ_END; bk = static_cast<Square>(bk + 1))
 		{
 			Pair_Lookup& e = pair_lookup[static_cast<int>(wk) * SQUARE_NB + static_cast<int>(bk)];
 			if (e.slice_id != SLICE_NONE) continue;
-			if (wk == bk || kings_adjacent(wk, bk)) continue;
+			if (wk == bk || king_attacks(wk).has_square(bk)) continue;
 
-			for (int t_id = 0; t_id < n_trans; ++t_id)
+			for (uint8_t t = 0; t < n_trans; ++t)
 			{
-				const Symmetry_Transform t = static_cast<Symmetry_Transform>(t_id);
-				const Square wk_t = apply_transform(wk, t);
-				const Square bk_t = apply_transform(bk, t);
+				const Square wk_t = apply_transform(square_bb(wk), t).peek_first_square();
+				const Square bk_t = apply_transform(square_bb(bk), t).peek_first_square();
 				const auto& look = pair_lookup[static_cast<int>(wk_t) * SQUARE_NB + static_cast<int>(bk_t)];
-				if (look.slice_id != SLICE_NONE && look.transform == Symmetry_Transform::IDENTITY)
+				if (look.slice_id != SLICE_NONE && look.transform == 0)
 				{
 					e.slice_id = look.slice_id;
 					e.transform = t;

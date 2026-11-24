@@ -100,26 +100,27 @@ NODISCARD bool parse_args(int argc, char** argv, Options& out)
 			if (i + 1 >= argc) { std::cerr << flag << " needs an argument\n"; std::exit(1); }
 			return argv[++i];
 		};
-		if (const char* v = take("-r")) {
+		const char* v = nullptr;
+		if ((v = take("-r"))) {
 			std::stringstream ss(v);
 			for (std::string s; std::getline(ss, s, ',');)
 				if (!s.empty()) out.materials.push_back(s);
 		}
-		else if (const char* v = take("--list"))    out.list_file = v;
-		else if (const char* v = take("--out"))     out.to.out_dir = v;
-		else if (const char* v = take("--wdl"))     out.wdl_dirs.emplace_back(v);
-		else if (const char* v = take("--dtz"))     out.dtz_dir = v;
-		else if (const char* v = take("--dtc"))     out.dtc_dir = v;
-		else if (const char* v = take("--dtm"))     out.dtm_dir = v;
-		else if (const char* v = take("--dtm50"))   out.dtm50_dir = v;
-		else if (const char* v = take("--tmp"))     out.to.tmp_dir = v;
-		else if (const char* v = take("--block"))
+		else if ((v = take("--list")))    out.list_file = v;
+		else if ((v = take("--out")))     out.to.out_dir = v;
+		else if ((v = take("--wdl")))     out.wdl_dirs.emplace_back(v);
+		else if ((v = take("--dtz")))     out.dtz_dir = v;
+		else if ((v = take("--dtc")))     out.dtc_dir = v;
+		else if ((v = take("--dtm")))     out.dtm_dir = v;
+		else if ((v = take("--dtm50")))   out.dtm50_dir = v;
+		else if ((v = take("--tmp")))     out.to.tmp_dir = v;
+		else if ((v = take("--block")))
 			out.to.block_size = std::strtoull(v, nullptr, 10) * 1024;
-		else if (const char* v = take("--samples"))
+		else if ((v = take("--samples")))
 			out.to.perm_samples = std::strtoull(v, nullptr, 10);
-		else if (const char* v = take("-t"))
+		else if ((v = take("-t")))
 			out.num_threads = std::max<size_t>(1, std::strtoull(v, nullptr, 10));
-		else if (const char* v = take("--cache"))
+		else if ((v = take("--cache")))
 			out.cache_mib = std::strtoull(v, nullptr, 10);
 		else if (a == "--do-wdl")    out.do_wdl = true;
 		else if (a == "--extract-dtz") out.to.extract_dtz = true;

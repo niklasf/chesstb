@@ -132,7 +132,6 @@ private:
 	NODISCARD Iter_Result run_iter(In_Out_Param<Thread_Pool> thread_pool,
 	                               Color stm, uint16_t ply);
 
-
 	NODISCARD Loss_Verification_Result check_loss(
 		Position_For_Gen& pos_gen,
 		uint16_t ply, DTM_Intermediate_Entry hint) const;

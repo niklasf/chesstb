@@ -828,7 +828,6 @@ NODISCARD Layered_Compressed_EGTB save_compress_dtm50(
 
 }  // namespace
 
-
 void DTM50_Generator::save_to_disk(In_Out_Param<Thread_Pool> thread_pool, const EGTB_Paths& paths)
 {
 	const auto t_save_start = std::chrono::steady_clock::now();

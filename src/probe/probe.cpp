@@ -42,65 +42,6 @@ bool find_in_dirs(const Piece_Config& ps, const char* ext,
 	return false;
 }
 
-template <typename Map, typename Make>
-auto cached_open(const std::atomic<uint64_t>& epoch_src, std::mutex& mu, Map& cache,
-                 typename Map::key_type k, Make&& make)
-	-> typename Map::mapped_type::element_type*
-{
-	using Handle = typename Map::mapped_type;
-	using T = typename Handle::element_type;
-	thread_local TL_Cache<T, typename Map::key_type, Handle> tl;
-
-	for (;;)
-	{
-		const uint64_t epoch = epoch_src.load(std::memory_order_acquire);
-
-		if (const Handle* hit = tl.find(epoch, k)) return hit->get();
-		{
-			std::lock_guard<std::mutex> lk(mu);
-			auto it = cache.find(k);
-			if (it != cache.end())
-			{
-				tl.insert(epoch, k, it->second);
-				return it->second.get();
-			}
-		}
-
-		Handle built = make();
-
-		std::lock_guard<std::mutex> lk(mu);
-		if (epoch_src.load(std::memory_order_relaxed) != epoch)
-			continue;
-
-		auto [it, inserted] = cache.try_emplace(k, std::move(built));
-		tl.insert(epoch, k, it->second);
-		return it->second.get();
-	}
-}
-
-struct Config_And_Literal_Key
-{
-	Piece_Config cfg;
-	Material_Key literal_key;
-};
-
-Config_And_Literal_Key piece_config_and_literal_key_from_position(const Position& pos)
-{
-	std::array<Piece, MAX_MAN> pieces;
-	size_t n = 0;
-	Material_Key literal_key;
-	for (Piece pc : ALL_PIECES)
-	{
-		const size_t cnt = pos.piece_bb(pc).num_set_bits();
-		for (size_t i = 0; i < cnt; ++i)
-		{
-			pieces[n++] = pc;
-			literal_key.add_piece(pc);
-		}
-	}
-	return { Piece_Config(Const_Span<Piece>(pieces.data(), n)), literal_key };
-}
-
 constexpr int MAX_DERIVE_DEPTH = 64;
 
 NODISCARD WDL_Entry invert_wdl(WDL_Entry w)
@@ -186,6 +127,23 @@ NODISCARD bool prefer_new(WDL_Entry new_wdl, uint16_t new_dtz,
 	if (win_side)  return new_dtz < old_dtz;
 	if (loss_side) return new_dtz > old_dtz;
 	return false;
+}
+
+// A move to child_wdl at dtz, offered to the mover's best: past 100 plies a
+// decisive class turns cursed.
+void offer_dtz(WDL_Entry child_wdl, uint16_t dtz, WDL_Entry& best_wdl, uint16_t& best_dtz)
+{
+	WDL_Entry my_wdl = invert_wdl(child_wdl);
+	if (dtz > DTZ_MAX_NON_CURSED)
+	{
+		if (my_wdl == WDL_Entry::WIN)  my_wdl = WDL_Entry::CURSED_WIN;
+		if (my_wdl == WDL_Entry::LOSE) my_wdl = WDL_Entry::BLESSED_LOSS;
+	}
+	if (prefer_new(my_wdl, dtz, best_wdl, best_dtz))
+	{
+		best_wdl = my_wdl;
+		best_dtz = dtz;
+	}
 }
 
 NODISCARD bool below_pinned_class(WDL_Entry pinned, WDL_Entry offer)
@@ -319,7 +277,6 @@ struct DTM50_Result
 	uint16_t dtz = 0;
 };
 
-
 NODISCARD std::optional<uint16_t> dtz_from_draw_flip(
 	uint16_t h, WDL_Entry wdl, const Position& pos)
 {
@@ -361,12 +318,12 @@ NODISCARD uint16_t quiet_move_dtz(uint16_t child_dtz, bool cursed_exit, bool chi
 
 struct DTZ_Minimax
 {
-	void zeroing_child(WDL_Entry child_wdl) { offer(child_wdl, 1); }
+	void zeroing_child(WDL_Entry child_wdl) { offer_dtz(child_wdl, 1, best_wdl, best_dtz); }
 
 	void quiet_child(WDL_Entry child_wdl, const DTM50_Result& child, bool cursed_exit)
 	{
 		if (child.has_dtz)
-			offer(child_wdl, quiet_move_dtz(child.dtz, cursed_exit, false));
+			offer_dtz(child_wdl, quiet_move_dtz(child.dtz, cursed_exit, false), best_wdl, best_dtz);
 		else
 			skipped.of_dtz_class(invert_wdl(child_wdl));
 	}
@@ -386,21 +343,6 @@ struct DTZ_Minimax
 	}
 
 private:
-	void offer(WDL_Entry child_wdl, uint16_t dtz)
-	{
-		WDL_Entry my_wdl = invert_wdl(child_wdl);
-		if (dtz > DTZ_MAX_NON_CURSED)
-		{
-			if (my_wdl == WDL_Entry::WIN)  my_wdl = WDL_Entry::CURSED_WIN;
-			if (my_wdl == WDL_Entry::LOSE) my_wdl = WDL_Entry::BLESSED_LOSS;
-		}
-		if (prefer_new(my_wdl, dtz, best_wdl, best_dtz))
-		{
-			best_wdl = my_wdl;
-			best_dtz = dtz;
-		}
-	}
-
 	WDL_Entry best_wdl = WDL_Entry::LOSE;
 	uint16_t best_dtz = 0;
 	Skipped_Children skipped;
@@ -475,14 +417,39 @@ struct Probe_Tables::Impl
 		std::unordered_map<Material_Key, std::shared_ptr<File>, Material_Key_Hash>& cache,
 		const std::vector<std::filesystem::path>& dirs, const char* ext, const Piece_Config& ps)
 	{
-		return cached_open(epoch, tables_mu, cache, ps.min_material_key(),
-			[&]() -> std::shared_ptr<File> {
-				std::filesystem::path path;
-				if (!find_in_dirs(ps, ext, dirs, &path)) return nullptr;
-				auto f = std::make_shared<File>(blocks);
-				f->load(ps, path);
-				return f;
-			});
+		// Opened once per epoch: from the thread's own cache, else the shared
+		// one, else from disk.
+		using Handle = std::shared_ptr<File>;
+		thread_local TL_Cache<File, Material_Key, Handle> tl;
+		const Material_Key k = ps.min_material_key();
+		for (;;)
+		{
+			const uint64_t e = epoch.load(std::memory_order_acquire);
+			if (const Handle* hit = tl.find(e, k)) return hit->get();
+			{
+				std::lock_guard<std::mutex> lk(tables_mu);
+				auto it = cache.find(k);
+				if (it != cache.end())
+				{
+					tl.insert(e, k, it->second);
+					return it->second.get();
+				}
+			}
+
+			Handle built;
+			std::filesystem::path path;
+			if (find_in_dirs(ps, ext, dirs, &path))
+			{
+				built = std::make_shared<File>(blocks);
+				built->load(ps, path);
+			}
+
+			std::lock_guard<std::mutex> lk(tables_mu);
+			if (epoch.load(std::memory_order_relaxed) != e) continue;
+			auto [it, inserted] = cache.try_emplace(k, std::move(built));
+			tl.insert(e, k, it->second);
+			return it->second.get();
+		}
 	}
 
 	NODISCARD WDL_File*   open_wdl  (const Piece_Config& ps) { return open_table(wdl_cache,   wdl_dirs,   WDL_EXT,   ps); }
@@ -491,14 +458,9 @@ struct Probe_Tables::Impl
 	NODISCARD DTM_File*   open_dtm  (const Piece_Config& ps) { return open_table(dtm_cache,   dtm_dirs,   DTM_EXT,   ps); }
 	NODISCARD DTM50_File* open_dtm50(const Piece_Config& ps) { return open_table(dtm50_cache, dtm50_dirs, DTM50_EXT, ps); }
 
-	NODISCARD bool has_any_table(const Piece_Config& ps)
-	{
-		return open_wdl(ps) != nullptr;
-	}
-
 	NODISCARD Probe_Result probe_impl(const Piece_Config& ps, const Position& pos, unsigned rule50, Square ep_square, int depth);
 	NODISCARD WDL_Entry probe_wdl_impl(const Piece_Config& ps, const Position& pos, Square ep_square, int depth);
-	NODISCARD std::optional<Canonical_Root> route_specialized(const Position& pos, Square ep_square);
+	NODISCARD Canonical_Root canonical_root(Position pos, Square ep_square);
 	NODISCARD Child_Pos make_child(const Position& parent, Move m);
 	NODISCARD WDL_Entry probe_wdl_internal(WDL_File* w, const Piece_Config& ps, const Position& pos, int depth);
 	NODISCARD WDL_Stored read_wdl_stored(WDL_File* w, const Position& pos, int depth);
@@ -526,7 +488,6 @@ struct Probe_Tables::Impl
 	NODISCARD std::optional<uint16_t> derive_dtm(const Position& pos, WDL_Entry wdl, int depth);
 	NODISCARD DTM50_Result derive_dtm50(const Position& pos, WDL_Entry wdl, unsigned rule50, int depth);
 	NODISCARD DTM50_Result derive_dtm50_flat(const Position& pos, WDL_Entry wdl, int depth);
-
 
 	void scan_paths();
 
@@ -1016,18 +977,7 @@ std::optional<DTZ_Value> Probe_Tables::Impl::derive_dtz(const Position& pos, WDL
 			rounded |= child_dtz->rounded;
 		}
 
-		WDL_Entry my_wdl = invert_wdl(cw);
-		if (my_dtz > DTZ_MAX_NON_CURSED)
-		{
-			if (my_wdl == WDL_Entry::WIN)  my_wdl = WDL_Entry::CURSED_WIN;
-			if (my_wdl == WDL_Entry::LOSE) my_wdl = WDL_Entry::BLESSED_LOSS;
-		}
-
-		if (prefer_new(my_wdl, my_dtz, best_wdl, best_dtz))
-		{
-			best_wdl = my_wdl;
-			best_dtz = my_dtz;
-		}
+		offer_dtz(cw, my_dtz, best_wdl, best_dtz);
 		return is_win_class(wdl) && best_wdl == wdl && best_dtz == 1;
 	}))
 		return DTZ_Value{ best_dtz, false };
@@ -1063,7 +1013,7 @@ std::optional<uint16_t> Probe_Tables::Impl::derive_dtm(const Position& pos, WDL_
 			if (c.ep != SQ_END)
 			{
 				Probe_Result cr = probe_impl(c.ps, c.pos, IGNORE_50MR, c.ep, depth + 1);
-				if (cr.status != Probe_Result::Status::OK || cr.wdl == WDL_Entry::ILLEGAL)
+				if (cr.wdl == WDL_Entry::ILLEGAL)
 				{
 					skipped.unknown();
 					return false;
@@ -1149,7 +1099,7 @@ DTM50_Result Probe_Tables::Impl::derive_dtm50(
 			if (c.ep != SQ_END)
 			{
 				Probe_Result cr = probe_impl(c.ps, c.pos, child_rule50, c.ep, depth + 1);
-				if (cr.status != Probe_Result::Status::OK || cr.wdl == WDL_Entry::ILLEGAL)
+				if (cr.wdl == WDL_Entry::ILLEGAL)
 				{
 					skipped.unknown();
 					return false;
@@ -1231,7 +1181,7 @@ DTM50_Result Probe_Tables::Impl::derive_dtm50_flat(const Position& pos, WDL_Entr
 		else if (c.ep != SQ_END)
 		{
 			Probe_Result cr = probe_impl(c.ps, c.pos, IGNORE_50MR, c.ep, depth + 1);
-			if (cr.status != Probe_Result::Status::OK || cr.wdl == WDL_Entry::ILLEGAL)
+			if (cr.wdl == WDL_Entry::ILLEGAL)
 			{
 				skipped.unknown();
 				dtz.unwalked();
@@ -1308,7 +1258,6 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 	WDL_File* w = open_wdl(ps);
 	if (!w) return r;
 
-	r.status = Probe_Result::Status::OK;
 	const bool rule50_drawn = rule50 != IGNORE_50MR && rule50 >= DTM50_HMC_COUNT;
 	r.wdl = probe_wdl_internal(w, ps, pos, depth);
 	if (r.wdl == WDL_Entry::ILLEGAL) return r;
@@ -1400,13 +1349,12 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 	uint16_t  best_dtc       = r.has_dtc ? static_cast<uint16_t>(r.dtc) : 0;
 	bool any_ep = false;
 	std::optional<bool> has_non_ep_move;
-	// An ep capture prices DTC and DTM50 only on a live clock: unclocked they
-	// do not exist, even where every move is an ep capture, and a drawn clock
-	// has the claim already.
+	// Unclocked, DTC and DTM50 don't exist, even with only ep captures; a
+	// drawn clock has the claim.
 	const bool live_clock = rule50 != IGNORE_50MR && !rule50_drawn;
 	if (rule50_drawn)
 	{
-		// Even an EP conversion costs a ply; the claim is already available.
+		// Even an ep capture costs a ply; the claim is already there.
 		best.dtc_wdl = WDL_Entry::DRAW;
 		best.has_dtc = true;
 		best.dtm50_wdl = WDL_Entry::DRAW;
@@ -1418,7 +1366,6 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 		Probe_Result cr;
 		if (child.ps.is_bare_kings())
 		{
-			cr.status = Probe_Result::Status::OK;
 			cr.wdl = WDL_Entry::DRAW;
 			cr.has_dtz = best.has_dtz;
 			cr.has_dtm = best.has_dtm;
@@ -1429,7 +1376,7 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 		{
 			cr = probe_impl(child.ps, child.pos, live_clock ? 0u : IGNORE_50MR, SQ_END, depth + 1);
 		}
-		if (cr.status != Probe_Result::Status::OK || cr.wdl == WDL_Entry::ILLEGAL)
+		if (cr.wdl == WDL_Entry::ILLEGAL)
 			return true;
 
 		const WDL_Entry my_wdl = invert_wdl(cr.wdl);
@@ -1442,7 +1389,6 @@ Probe_Result Probe_Tables::Impl::probe_impl(const Piece_Config& ps, const Positi
 		}
 		if (!*has_non_ep_move && !any_ep)
 		{
-			best.status = Probe_Result::Status::OK;
 			best.wdl = my_wdl;
 
 			best_dtz_wdl = my_wdl;
@@ -1592,143 +1538,42 @@ WDL_Entry Probe_Tables::Impl::probe_wdl_impl(const Piece_Config& ps, const Posit
 
 namespace {
 
-Canonical_Root canonical_root_from_position(const Position& input, Square ep_square)
+// The table's material for pos, less the castling rooks (castling) and the
+// pair pw/pb (SQ_END: none), the colours flipped where the literal key is the
+// mirrored one.
+Canonical_Root root_for(const Position& pos, Square ep_square, bool castling, Square pw, Square pb)
 {
-	auto [ps, literal_key] = piece_config_and_literal_key_from_position(input);
-	Position pos = input;
-	if (literal_key != ps.base_material_key())
-	{
-		pos = input.mirror();
-		if (ep_square != SQ_END)
-			ep_square = sq_rank_mirror(ep_square);
-		return { std::move(ps), std::move(pos), ep_square, true };
-	}
-	return { std::move(ps), std::move(pos), ep_square, false };
-}
-
-void specialized_literal_key(const Piece_Config& ps, const Position& pos,
-                            Material_Key& out)
-{
-	Square castling_rooks[COLOR_NB * Castling_Group::MAX_RIGHTS];
-	size_t num_castling_rooks = 0;
 	Piece_Config::Castling_Rights_Counts rights{ 0, 0 };
-	if (ps.has_castling())
+	Bitboard excluded = pw != SQ_END ? square_bb(pw) | pb : Bitboard::make_empty();
+	if (castling)
 		for (const Color c : { WHITE, BLACK })
-			for (const bool h_side : { false, true })
-				if (pos.can_castle(c, h_side))
-				{
-					castling_rooks[num_castling_rooks++] = pos.castling_rook_square(c, h_side);
-					rights[c] += 1;
-				}
-
-	Square pw = SQ_END, pb = SQ_END;
-	if (ps.has_opposing_pair())
-	{
-		Square ws[16], bs[16];
-		size_t nw = 0, nb = 0;
-		Bitboard wb = pos.piece_bb(WHITE_PAWN);
-		while (wb) ws[nw++] = wb.pop_first_square();
-		Bitboard bb = pos.piece_bb(BLACK_PAWN);
-		while (bb) bs[nb++] = bb.pop_first_square();
-		Pair_Group::canonical_pair(Const_Span<Square>(ws, nw),
-		                           Const_Span<Square>(bs, nb), pw, pb);
-	}
-
-	Material_Key k;
-	for (Piece pc : ALL_PIECES)
-	{
-		Bitboard b = pos.piece_bb(pc);
-		while (b)
 		{
-			const Square s = b.pop_first_square();
-			if (s == pw || s == pb) continue;
-			bool holds_right = false;
-			for (size_t i = 0; i < num_castling_rooks; ++i)
-				if (castling_rooks[i] == s) { holds_right = true; break; }
-			if (holds_right) continue;
-			k.add_piece(pc);
+			const Bitboard rooks = pos.castling_rooks(c);
+			rights[c] = popcnt(rooks.bits());
+			excluded |= rooks;
 		}
-	}
-	if (ps.has_opposing_pair())
-		k.add_pair();
-	if (num_castling_rooks > 0)
-		k.add_castling(rights[WHITE], rights[BLACK]);
-	out = k;
-}
-
-std::optional<Piece_Config> specialized_config_from_position(const Position& pos, bool with_pair)
-{
-	Square pw = SQ_END, pb = SQ_END;
-	if (with_pair)
-	{
-		Square ws[16], bs[16];
-		size_t nw = 0, nb = 0;
-		Bitboard wb = pos.piece_bb(WHITE_PAWN);
-		while (wb) ws[nw++] = wb.pop_first_square();
-		Bitboard bb = pos.piece_bb(BLACK_PAWN);
-		while (bb) bs[nb++] = bb.pop_first_square();
-		if (!Pair_Group::find_canonical(Const_Span<Square>(ws, nw),
-		                                Const_Span<Square>(bs, nb), pw, pb))
-			return std::nullopt;
-	}
-
-	Square castling_rooks[COLOR_NB * Castling_Group::MAX_RIGHTS];
-	size_t num_castling_rooks = 0;
-	Piece_Config::Castling_Rights_Counts rights{ 0, 0 };
-	for (const Color c : { WHITE, BLACK })
-		for (const bool h_side : { false, true })
-			if (pos.can_castle(c, h_side))
-			{
-				castling_rooks[num_castling_rooks++] = pos.castling_rook_square(c, h_side);
-				rights[c] += 1;
-			}
-
-	if (!with_pair && num_castling_rooks == 0) return std::nullopt;
 
 	std::array<Piece, MAX_MAN> pieces;
 	size_t n = 0;
+	Material_Key key;
 	for (Piece pc : ALL_PIECES)
-	{
-		Bitboard b = pos.piece_bb(pc);
-		while (b)
+		for (size_t k = popcnt((pos.piece_bb(pc) & ~excluded).bits()); k > 0; --k)
 		{
-			const Square sq = b.pop_first_square();
-			if (sq == pw || sq == pb) continue;
-			bool holds_right = false;
-			for (size_t i = 0; i < num_castling_rooks; ++i)
-				if (castling_rooks[i] == sq) { holds_right = true; break; }
-			if (!holds_right) pieces[n++] = pc;
+			pieces[n++] = pc;
+			key.add_piece(pc);
 		}
-	}
 
 	Piece_Config ps(Const_Span<Piece>(pieces.data(), n), rights);
-	if (with_pair) ps.mark_opposing_pair();
-	return ps;
-}
-
-Canonical_Root canonical_root_from_config(
-	const Piece_Config& ps, const Position& input, Square ep_square)
-{
-	Material_Key literal_key;
-	specialized_literal_key(ps, input, literal_key);
-	if (literal_key == ps.material_keys().first)
-		return Canonical_Root{ ps, input, ep_square, false };
-
-	Position pos = input.mirror();
-	if (ep_square != SQ_END)
-		ep_square = sq_rank_mirror(ep_square);
-	return Canonical_Root{ ps, std::move(pos), ep_square, true };
-}
-
-size_t count_pieces_from_filename(const std::string& fname)
-{
-	size_t n = 0;
-	for (char c : fname)
+	if (pw != SQ_END)
 	{
-		if (c == '.') break;
-		++n;
+		ps.mark_opposing_pair();
+		key.add_pair();
 	}
-	return n;
+	if (rights[WHITE] + rights[BLACK] > 0)
+		key.add_castling(rights[WHITE], rights[BLACK]);
+	if (key == ps.base_material_key())
+		return { std::move(ps), pos, ep_square, false };
+	return { std::move(ps), pos.mirror(), ep_square != SQ_END ? sq_rank_mirror(ep_square) : SQ_END, true };
 }
 
 }  // namespace
@@ -1746,7 +1591,7 @@ void Probe_Tables::Impl::scan_paths()
 			const std::string n = e.path().filename().string();
 			if (n.size() < ext_len) continue;
 			if (n.compare(n.size() - ext_len, ext_len, ext) != 0) continue;
-			const size_t cnt = count_pieces_from_filename(n);
+			const size_t cnt = std::min(n.find('.'), n.size());
 			if (cnt > lg) lg = cnt;
 		}
 	};
@@ -1804,28 +1649,38 @@ void Probe_Tables::set_block_cache_bytes(size_t bytes) { m_impl->blocks->set_max
 size_t Probe_Tables::block_cache_bytes() const { return m_impl->blocks->max_bytes(); }
 size_t Probe_Tables::block_cache_bytes_used() const { return m_impl->blocks->cur_bytes(); }
 
-std::optional<Canonical_Root> Probe_Tables::Impl::route_specialized(
-	const Position& pos, Square ep_square)
+// The position as its tables index it: castling rooks apart, and the opposing
+// pair too where its table exists. That turns only on the material, the
+// castling rights held and whether there is a pair, so each thread keeps the
+// answers by those, per epoch.
+Canonical_Root Probe_Tables::Impl::canonical_root(Position pos, Square ep_square)
 {
-	if (pos.castling() != NO_CASTLING)
+	struct Root
 	{
-		if (std::optional<Piece_Config> both = specialized_config_from_position(pos, true))
-		{
-			Canonical_Root r = canonical_root_from_config(*both, pos, ep_square);
-			if (has_any_table(r.ps))
-				return r;
-		}
-		std::optional<Piece_Config> castling_ps = specialized_config_from_position(pos, false);
-		return canonical_root_from_config(*castling_ps, pos, ep_square);
+		std::optional<Piece_Config> ps;
+		bool mirrored = false;
+	};
+	thread_local TL_Cache<Root, Material_Key, Root> tl;
+
+	Material_Key tag = pos.material_key();
+	Square pw = SQ_END, pb = SQ_END;
+	if (Pair_Group::canonical_pair(pos.piece_bb(WHITE_PAWN), pos.piece_bb(BLACK_PAWN), pw, pb))
+		tag.add_pair();
+	tag.add_castling(popcnt(pos.castling_rooks(WHITE).bits()), popcnt(pos.castling_rooks(BLACK).bits()));
+	const uint64_t e = epoch.load(std::memory_order_acquire);
+
+	if (const Root* hit = tl.find(e, tag))
+	{
+		if (!hit->mirrored) return { *hit->ps, std::move(pos), ep_square, false };
+		return { *hit->ps, pos.mirror(), ep_square != SQ_END ? sq_rank_mirror(ep_square) : SQ_END, true };
 	}
 
-	if (std::optional<Piece_Config> pair_ps = specialized_config_from_position(pos, true))
-	{
-		Canonical_Root r = canonical_root_from_config(*pair_ps, pos, ep_square);
-		if (has_any_table(r.ps))
-			return r;
-	}
-	return std::nullopt;
+	const bool castling = pos.castling() != NO_CASTLING;
+	std::optional<Canonical_Root> r;
+	if (pw != SQ_END) r = root_for(pos, ep_square, castling, pw, pb);
+	if (!r || open_wdl(r->ps) == nullptr) r = root_for(pos, ep_square, castling, SQ_END, SQ_END);
+	tl.insert(e, tag, Root{ r->ps, r->mirrored });
+	return std::move(*r);
 }
 
 Child_Pos Probe_Tables::Impl::make_child(const Position& parent, Move m)
@@ -1836,76 +1691,24 @@ Child_Pos Probe_Tables::Impl::make_child(const Position& parent, Move m)
 	Position pos = parent;
 	(void)pos.do_move(m);
 
-	if (std::optional<Canonical_Root> r = route_specialized(pos, raw_ep))
-	{
-		return Child_Pos{ std::move(r->pos), std::move(r->ps), r->ep_square, zeroing };
-	}
-
-	auto [cps, lit] = piece_config_and_literal_key_from_position(pos);
-	Square ep = raw_ep;
-	if (lit != cps.base_material_key())
-	{
-		pos = pos.mirror();
-		if (ep != SQ_END) ep = sq_rank_mirror(ep);
-	}
-	return Child_Pos{ std::move(pos), std::move(cps), ep, zeroing };
-}
-
-Probe_Result Probe_Tables::probe(const Position& pos, unsigned rule50)
-{
-	return probe(pos, SQ_END, rule50);
+	Canonical_Root r = canonical_root(std::move(pos), raw_ep);
+	return Child_Pos{ std::move(r.pos), std::move(r.ps), r.ep_square, zeroing };
 }
 
 Probe_Result Probe_Tables::probe(const Position& pos, Square ep_square, unsigned rule50)
 {
-	const std::optional<Canonical_Root> routed = m_impl->route_specialized(pos, ep_square);
-	const Canonical_Root root = routed ? *routed : canonical_root_from_position(pos, ep_square);
-	return m_impl->probe_impl(root.ps, root.pos, rule50, root.ep_square, 0);
-}
-
-Probe_Result Probe_Tables::probe(const Piece_Config& ps, const Position& pos, unsigned rule50)
-{
-	return probe(ps, pos, SQ_END, rule50);
-}
-
-Probe_Result Probe_Tables::probe(const Piece_Config& ps, const Position& pos, Square ep_square, unsigned rule50)
-{
-	if (const std::optional<Canonical_Root> routed = m_impl->route_specialized(pos, ep_square))
-		return m_impl->probe_impl(routed->ps, routed->pos, rule50, routed->ep_square, 0);
-	const Canonical_Root root = canonical_root_from_config(ps, pos, ep_square);
+	const Canonical_Root root = m_impl->canonical_root(pos, ep_square);
 	return m_impl->probe_impl(root.ps, root.pos, rule50, root.ep_square, 0);
 }
 
 WDL_Entry Probe_Tables::probe_wdl(const Position& pos, Square ep_square, unsigned rule50)
 {
 	if (rule50 != 0) return WDL_Entry::ILLEGAL;
-	const std::optional<Canonical_Root> routed = m_impl->route_specialized(pos, ep_square);
-	const Canonical_Root root = routed ? *routed : canonical_root_from_position(pos, ep_square);
-	return m_impl->probe_wdl_impl(root.ps, root.pos, root.ep_square, 0);
-}
-
-WDL_Entry Probe_Tables::probe_wdl(
-	const Piece_Config& ps, const Position& pos, Square ep_square, unsigned rule50)
-{
-	if (rule50 != 0) return WDL_Entry::ILLEGAL;
-	if (const std::optional<Canonical_Root> routed = m_impl->route_specialized(pos, ep_square))
-		return m_impl->probe_wdl_impl(routed->ps, routed->pos, routed->ep_square, 0);
-	const Canonical_Root root = canonical_root_from_config(ps, pos, ep_square);
+	const Canonical_Root root = m_impl->canonical_root(pos, ep_square);
 	return m_impl->probe_wdl_impl(root.ps, root.pos, root.ep_square, 0);
 }
 
 namespace {
-
-Move rank_mirror_move(Move m)
-{
-	if (m.is_ep_capture())
-		return Move::make_ep_capture(sq_rank_mirror(m.from()), sq_rank_mirror(m.to()));
-	if (m.is_promotion())
-		return Move::make_promotion(sq_rank_mirror(m.from()), sq_rank_mirror(m.to()), m.promotion());
-	if (m.is_castling())
-		return Move::make_castling(sq_rank_mirror(m.from()), sq_rank_mirror(m.to()));
-	return Move::make_quiet(sq_rank_mirror(m.from()), sq_rank_mirror(m.to()));
-}
 
 // Positive values are wins for the side to move; negative values are losses.
 int signed_dtz_of(const Probe_Result& r)
@@ -1924,7 +1727,7 @@ int signed_dtz_of(const Probe_Result& r)
 	}
 }
 
-// Fathom WdlToDtz mapping for zeroing moves.
+// A zeroing move's DTZ by its class: one ply, past 100 when cursed.
 int zeroing_signed_dtz(WDL_Entry my_wdl)
 {
 	switch (my_wdl)
@@ -1939,14 +1742,15 @@ int zeroing_signed_dtz(WDL_Entry my_wdl)
 	}
 }
 
-// An exact DTZ wins while v + cnt50 <= 100. A cursed win or blessed loss past
-// 900 plies keeps its side of the draw rank; equal ranks sort by dtz.
-int fathom_dtz_rank(int v, unsigned cnt50, bool has_repeated)
+// A move is worth its child at the clock the move leaves, even past 100: a win
+// ranks top at DTZ 1 or while v + cnt50 <= 100 unrepeated, a loss bottom at
+// DTZ -1 or while 2|v| + cnt50 < 100 (as Stockfish); else the rank leans to 0.
+int dtz_rank(int v, unsigned cnt50, bool has_repeated)
 {
 	const int clock = static_cast<int>(cnt50);
-	if (v > 0) return (v + clock <= 100 && !has_repeated)
+	if (v > 0) return (v == 1 || (v + clock <= 100 && !has_repeated))
 		? 1000 : std::max(1, 1000 - (v + clock));
-	if (v < 0) return (-v * 2 + clock < 100)
+	if (v < 0) return (v == -1 || -v * 2 + clock < 100)
 		? -1000 : std::min(-1, -1000 + (-v + clock));
 	return 0;
 }
@@ -1956,7 +1760,7 @@ constexpr int TB_VALUE_DRAW    =   0;
 constexpr int TB_VALUE_MATE    = 32000;
 constexpr int TB_MAX_MATE_PLY  = 255;
 
-int fathom_dtz_score(int rank, int bound)
+int dtz_score(int rank, int bound)
 {
 	if (rank >=  bound) return  TB_VALUE_MATE - TB_MAX_MATE_PLY - 1;
 	if (rank >       0) return std::max( 3, rank - 800) * TB_VALUE_PAWN / 200;
@@ -1972,19 +1776,16 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 	unsigned rule50, bool use_rule50, bool has_repeated)
 {
 	std::vector<Root_Move> out;
-	const Canonical_Root root = canonical_root_from_position(pos, ep_square);
-	const Position& probe_pos = root.pos;
 
 	const int bound = use_rule50 ? 900 : 1;
 
 	auto visit = [&](Move m) FORCE_INLINE_LAMBDA {
-		Child_Pos c = m_impl->make_child(probe_pos, m);
+		Child_Pos c = m_impl->make_child(pos, m);
 		// A quiet root move spends one ply even when the root rank ignores 50MR.
 		const unsigned child_rule50 = c.is_zeroing ? 0u : (use_rule50 ? rule50 + 1u : 1u);
 		Probe_Result cr;
 		if (c.ps.is_bare_kings())
 		{
-			cr.status = Probe_Result::Status::OK;
 			cr.wdl = WDL_Entry::DRAW;
 			cr.has_dtz = true;
 		}
@@ -1992,7 +1793,7 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 		{
 			cr = m_impl->probe_impl(c.ps, c.pos, child_rule50, c.ep, 0);
 		}
-		if (cr.status != Probe_Result::Status::OK || cr.wdl == WDL_Entry::ILLEGAL)
+		if (cr.wdl == WDL_Entry::ILLEGAL)
 			return true;
 
 		WDL_Entry my_wdl = invert_wdl(cr.wdl);
@@ -2011,7 +1812,7 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 			else if (const int child = -signed_dtz_of(cr); child != 0)
 			{
 				const int d = quiet_move_dtz(static_cast<uint16_t>(child > 0 ? child : -child),
-				                             is_cursed_exit(probe_pos, c, cr.wdl), cr.dtz_rounded);
+				                             is_cursed_exit(pos, c, cr.wdl), cr.dtz_rounded);
 				const bool cursed = cr.wdl == WDL_Entry::CURSED_WIN
 					|| cr.wdl == WDL_Entry::BLESSED_LOSS || d > 100;
 				if (cursed)
@@ -2022,9 +1823,9 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 				v = 0;
 		}
 
-		int rank = fathom_dtz_rank(v, use_rule50 ? rule50 : 0u, has_repeated);
+		int rank = dtz_rank(v, use_rule50 ? rule50 : 0u, has_repeated);
 
-		const bool conversion = m.is_promotion() || probe_pos.move_is_capture(m);
+		const bool conversion = m.is_promotion() || pos.move_is_capture(m);
 		// A push to mate is preferred at any budget.
 		const bool mate = c.pos.is_checkmate(c.ep);
 		int order = -1;
@@ -2055,14 +1856,14 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 			}
 		}
 
-		const int score = fathom_dtz_score(rank, bound);
-		out.push_back(Root_Move{root.mirrored ? rank_mirror_move(m) : m, my_wdl, v, rank, score});
+		const int score = dtz_score(rank, bound);
+		out.push_back(Root_Move{m, my_wdl, v, rank, score});
 		return false;
 	};
 
 	// `||` short-circuits, so a stop in the main scan skips the ep scan.
-	if (probe_pos.visit_legal_moves(visit)
-	    || probe_pos.visit_legal_ep_captures(root.ep_square, visit))
+	if (pos.visit_legal_moves(visit)
+	    || pos.visit_legal_ep_captures(ep_square, visit))
 		return {};
 
 	std::sort(out.begin(), out.end(),
@@ -2077,7 +1878,7 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtz(
 std::vector<Root_Move> Probe_Tables::probe_root_wdl(
 	const Position& pos, Square ep_square, bool use_rule50)
 {
-	// Fathom WdlToRank/WdlToValue, indexed by wdl_rank from side-to-move POV.
+	// Rank and score by class, indexed by wdl_rank from side-to-move POV.
 	static constexpr int WdlToRank[]  = { -1000, -899, 0, 899, 1000 };
 	static constexpr int WdlToValue[] = {
 		-TB_VALUE_MATE + TB_MAX_MATE_PLY + 1,
@@ -2087,14 +1888,10 @@ std::vector<Root_Move> Probe_Tables::probe_root_wdl(
 		 TB_VALUE_MATE - TB_MAX_MATE_PLY - 1
 	};
 
-
 	std::vector<Root_Move> out;
-	const Canonical_Root root = canonical_root_from_position(pos, ep_square);
-	const Position& probe_pos = root.pos;
-
 
 	auto visit = [&](Move m) FORCE_INLINE_LAMBDA {
-		Child_Pos c = m_impl->make_child(probe_pos, m);
+		Child_Pos c = m_impl->make_child(pos, m);
 		const WDL_Entry cw = c.ps.is_bare_kings()
 			? WDL_Entry::DRAW
 			: m_impl->probe_wdl_impl(c.ps, c.pos, c.ep, 0);
@@ -2105,14 +1902,14 @@ std::vector<Root_Move> Probe_Tables::probe_root_wdl(
 		const WDL_Entry ranked_wdl = use_rule50 ? my_wdl : fold_dtm_wdl(my_wdl);
 		const int index = wdl_rank(ranked_wdl);
 
-		Root_Move r{root.mirrored ? rank_mirror_move(m) : m, my_wdl, 0, WdlToRank[index], WdlToValue[index]};
+		Root_Move r{m, my_wdl, 0, WdlToRank[index], WdlToValue[index]};
 		out.push_back(r);
 		return false;
 	};
 
 	// `||` short-circuits, so a stop in the main scan skips the ep scan.
-	if (probe_pos.visit_legal_moves(visit)
-	    || probe_pos.visit_legal_ep_captures(root.ep_square, visit))
+	if (pos.visit_legal_moves(visit)
+	    || pos.visit_legal_ep_captures(ep_square, visit))
 		return {};
 
 	std::sort(out.begin(), out.end(),
@@ -2124,19 +1921,15 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtm(
 	const Position& pos, Square ep_square, unsigned rule50, bool use_rule50)
 {
 	std::vector<Root_Move> out;
-	const Canonical_Root root = canonical_root_from_position(pos, ep_square);
-	const Position& probe_pos = root.pos;
-
 
 	auto visit = [&](Move m) FORCE_INLINE_LAMBDA {
-		Child_Pos c = m_impl->make_child(probe_pos, m);
+		Child_Pos c = m_impl->make_child(pos, m);
 		const unsigned child_rule50 = use_rule50 ? (c.is_zeroing ? 0u : rule50 + 1u)
 		                                         : IGNORE_50MR;
 
 		Probe_Result cr;
 		if (c.ps.is_bare_kings())
 		{
-			cr.status    = Probe_Result::Status::OK;
 			cr.wdl       = WDL_Entry::DRAW;
 			cr.has_dtm   = true;
 			cr.dtm50_wdl = WDL_Entry::DRAW;
@@ -2146,8 +1939,7 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtm(
 		{
 			cr = m_impl->probe_impl(c.ps, c.pos, child_rule50, c.ep, 0);
 		}
-		if (cr.status != Probe_Result::Status::OK || !cr.has_dtm
-		    || cr.wdl == WDL_Entry::ILLEGAL)
+		if (cr.wdl == WDL_Entry::ILLEGAL || !cr.has_dtm)
 			return true;
 		if (use_rule50 && !cr.has_dtm50)
 			return true;
@@ -2176,8 +1968,8 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtm(
 		}
 		else
 		{
-			// A root at clock 100 or more is already drawn.
-			const WDL_Entry rule_wdl = rule50 >= 100 ? WDL_Entry::DRAW : invert_wdl(cr.dtm50_wdl);
+			// Each child at its own clock: past 100, a zeroing move still wins.
+			const WDL_Entry rule_wdl = invert_wdl(cr.dtm50_wdl);
 			if (rule_wdl == WDL_Entry::WIN)
 			{
 				report_wdl = WDL_Entry::WIN;
@@ -2207,13 +1999,13 @@ std::vector<Root_Move> Probe_Tables::probe_root_dtm(
 			}
 		}
 
-		out.push_back(Root_Move{root.mirrored ? rank_mirror_move(m) : m, report_wdl, v, rank, score});
+		out.push_back(Root_Move{m, report_wdl, v, rank, score});
 		return false;
 	};
 
 	// `||` short-circuits, so a stop in the main scan skips the ep scan.
-	if (probe_pos.visit_legal_moves(visit)
-	    || probe_pos.visit_legal_ep_captures(root.ep_square, visit))
+	if (pos.visit_legal_moves(visit)
+	    || pos.visit_legal_ep_captures(ep_square, visit))
 		return {};
 
 	std::sort(out.begin(), out.end(),

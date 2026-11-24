@@ -60,13 +60,9 @@ NODISCARD constexpr Piece_Class piece_class(Piece p)
 
 struct Piece_Config
 {
-	// Uppercase letters are ordinary piece types (color set by side ordering).
-	// Lowercase 'p' is an opposing pawn pair: one white + one black pawn
-	// locked head-to-head, indexed jointly. At most one 'p' per material.
-	// Lowercase 'r' is a rook that still holds a castling right, together with
-	// the king it castles with: KrK is physically KRK, with the right indexed
-	// rather than lost. Two rights per side at most. See "Castling rights" in
-	// the README.
+	// Uppercase letters are plain pieces, coloured by side order. 'p' is an
+	// opposing pawn pair (one at most); 'r' a rook still holding a castling right
+	// with its king (KrK is KRK with the right indexed; two per side at most).
 	static constexpr char VALID_PIECES[] = "KQRBNPpr";
 
 	static constexpr std::array<int16_t, PIECE_NB> PIECE_STRENGTH_FOR_SIDE_ORDER = []() {
@@ -316,10 +312,6 @@ struct Piece_Config
 	}
 	NODISCARD size_t castling_rights(Color c) const { return m_castling_rights[c]; }
 	NODISCARD const Castling_Rights_Counts& castling_rights() const { return m_castling_rights; }
-	NODISCARD size_t total_castling_rights() const
-	{
-		return m_castling_rights[WHITE] + m_castling_rights[BLACK];
-	}
 
 	NODISCARD bool is_bare_kings() const
 	{
@@ -356,14 +348,6 @@ struct Piece_Config
 		m_has_opposing_pair = true;
 		m_base_mat_key.add_pair();
 		m_mirr_mat_key.add_pair();
-	}
-
-	void mark_castling(const Castling_Rights_Counts& rights)
-	{
-		ASSERT(!has_castling());
-		m_castling_rights = rights;
-		m_base_mat_key.add_castling(rights[WHITE], rights[BLACK]);
-		m_mirr_mat_key.add_castling(rights[BLACK], rights[WHITE]);
 	}
 
 private:

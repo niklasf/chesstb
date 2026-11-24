@@ -6,6 +6,7 @@
 // the end checksum); the in-memory builders pad with 8 trailing zero bytes.
 
 #include "util/defines.h"
+#include "util/endian.h"
 #include "util/math.h"
 #include "util/span.h"
 
@@ -33,15 +34,9 @@ NODISCARD INLINE uint64_t mono_read_bits(const uint8_t* base, size_t bitpos, uns
 	if (width == 0) return 0;
 	const size_t byte = bitpos >> 3;
 	const unsigned bit = static_cast<unsigned>(bitpos & 7);
-	uint64_t lo;
-	std::memcpy(&lo, base + byte, 8);
-	uint64_t v = lo >> bit;
+	uint64_t v = read_le<uint64_t>(base + byte) >> bit;
 	if (bit + width > 64)
-	{
-		uint64_t hi;
-		std::memcpy(&hi, base + byte + 8, 8);
-		v |= hi << (64 - bit);
-	}
+		v |= read_le<uint64_t>(base + byte + 8) << (64 - bit);
 	return v & mono_low_mask(width);
 }
 

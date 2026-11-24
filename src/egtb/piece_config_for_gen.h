@@ -55,27 +55,6 @@ struct Decomposed_Board_Index
 	Within_Slice_Index within;
 };
 
-// White-king fundamental-domain squares per symmetry group.
-inline constexpr Square ANCHOR_FILE_MIRROR_SQUARES[] = {
-	SQ_A1, SQ_B1, SQ_C1, SQ_D1,
-	SQ_A2, SQ_B2, SQ_C2, SQ_D2,
-	SQ_A3, SQ_B3, SQ_C3, SQ_D3,
-	SQ_A4, SQ_B4, SQ_C4, SQ_D4,
-	SQ_A5, SQ_B5, SQ_C5, SQ_D5,
-	SQ_A6, SQ_B6, SQ_C6, SQ_D6,
-	SQ_A7, SQ_B7, SQ_C7, SQ_D7,
-	SQ_A8, SQ_B8, SQ_C8, SQ_D8,
-};
-static_assert(sizeof(ANCHOR_FILE_MIRROR_SQUARES) / sizeof(Square) == 32);
-
-inline constexpr Square ANCHOR_TRIANGLE_SQUARES[] = {
-	SQ_A1, SQ_B1, SQ_C1, SQ_D1,
-	SQ_B2, SQ_C2, SQ_D2,
-	SQ_C3, SQ_D3,
-	SQ_D4,
-};
-static_assert(sizeof(ANCHOR_TRIANGLE_SQUARES) / sizeof(Square) == 10);
-
 struct King_Slice_Manager;
 
 struct Piece_Config_For_Gen : public Piece_Config
@@ -132,8 +111,8 @@ public:
 	NODISCARD const Pawn_Slice_Manager& pawn_slice_manager() const { return *m_pawn_slice_manager; }
 	NODISCARD const Pair_Group* pair_group() const { return m_pair_group.get(); }
 
-	// Squares one side's castling rooks stand on in `slice`, ascending by file.
-	NODISCARD Const_Span<Square> castling_rook_squares(int32_t king_slice_id, Color c) const;
+	// One side's castling rooks in `slice`.
+	NODISCARD Bitboard castling_rooks(int32_t king_slice_id, Color c) const;
 
 	NODISCARD const Piece_Group& group(Piece_Class c) const
 	{

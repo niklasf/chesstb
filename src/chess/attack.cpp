@@ -5,162 +5,126 @@
 
 #include "util/defines.h"
 
+#include <array>
 #include <cstdint>
+#include <utility>
 
-#if defined(__BMI2__)
+#if defined(__AVX2__)
   #include <immintrin.h>
-  #define CHESSTB_HAVE_PEXT 1
-#else
-  #define CHESSTB_HAVE_PEXT 0
 #endif
+#if defined(_MSC_VER)
+  #include <stdlib.h>
+#endif
+
+// Slider attacks by hyperbola quintessence: on each line through the slider,
+// the attacks are (o - s) ^ reverse(reverse(o) - reverse(s)), o being the
+// line's occupancy. For the file and both diagonals a byte swap is that
+// reversal (one square per byte); they run together in AVX2 lanes where
+// available. Ranks come from a small table.
 
 namespace {
 
-uint64_t ray_attacks_raw(Square sq, int dr, int df, uint64_t occupied)
+// Squares on the line through sq along (dr, df), both ways, sq excluded.
+constexpr uint64_t line_mask(int sq, int dr, int df)
 {
-	uint64_t attacks = 0;
-	int r = sq_rank(sq);
-	int f = sq_file(sq);
-	for (;;)
-	{
-		r += dr;
-		f += df;
-		if (r < 0 || r > 7 || f < 0 || f > 7)
-			break;
-		const uint64_t b = uint64_t(1) << sq_make(static_cast<Rank>(r), static_cast<File>(f));
-		attacks |= b;
-		if (occupied & b)
-			break;
-	}
-	return attacks;
+	uint64_t mask = 0;
+	for (const int sign : { 1, -1 })
+		for (int r = sq / 8 + sign * dr, f = sq % 8 + sign * df;
+		     r >= 0 && r < 8 && f >= 0 && f < 8; r += sign * dr, f += sign * df)
+			mask |= uint64_t{1} << (r * 8 + f);
+	return mask;
 }
 
-#if CHESSTB_HAVE_PEXT
-
-constexpr int BISHOP_DIRS[4][2] = { { 1, 1}, { 1,-1}, {-1, 1}, {-1,-1} };
-constexpr int ROOK_DIRS[4][2]   = { { 1, 0}, {-1, 0}, { 0, 1}, { 0,-1} };
-
-struct Slider_Tables
+INLINE uint64_t byte_swap(uint64_t b)
 {
-	struct Entry
-	{
-		uint64_t mask;
-		const uint64_t* attacks;
-	};
-
-	Entry bishop[SQUARE_NB];
-	Entry rook[SQUARE_NB];
-	uint64_t bishop_data[5248];
-	uint64_t rook_data[102400];
-#ifndef NDEBUG
-	bool ready = false;
+#if defined(_MSC_VER)
+	return _byteswap_uint64(b);
+#else
+	return __builtin_bswap64(b);
 #endif
+}
 
-	Slider_Tables()
+// Rank attacks for a slider on `file`, by the rank's 6 inner occupancy bits
+// (the edge squares never change the attack set).
+alignas(64) constexpr auto RANK_ATTACKS = []() {
+	std::array<std::array<uint8_t, 64>, 8> t{};
+	for (int file = 0; file < 8; ++file)
+		for (int occ6 = 0; occ6 < 64; ++occ6)
+		{
+			const int occ = occ6 << 1;
+			int attacks = 0;
+			for (int f = file + 1; f < 8; ++f) { attacks |= 1 << f; if (occ & (1 << f)) break; }
+			for (int f = file - 1; f >= 0; --f) { attacks |= 1 << f; if (occ & (1 << f)) break; }
+			t[file][occ6] = static_cast<uint8_t>(attacks);
+		}
+	return t;
+}();
+
+struct alignas(32) Slider_Masks
+{
+	// File, diagonal, antidiagonal, unused: one AVX2 lane each.
+	uint64_t file, diag, antidiag, none;
+	uint64_t r, rr;  // 2 * square_bb(sq), 2 * square_bb(63 - sq)
+	const uint8_t* rank_attacks;
+	int shift;  // 8 * rank
+
+	// [bishop, rook]: callers take the half they need and the rest folds away.
+	std::pair<uint64_t, uint64_t> both(uint64_t occupied) const
 	{
-		fill(bishop, bishop_data, BISHOP_DIRS);
-		fill(rook, rook_data, ROOK_DIRS);
-#ifndef NDEBUG
-		ready = true;
+		const uint64_t rank = static_cast<uint64_t>(rank_attacks[(occupied >> (shift + 1)) & 0x3f]) << shift;
+#if defined(__AVX2__)
+		// Byte swap within 128-bit lanes.
+		const auto bswap = [](__m256i v) {
+			return _mm256_shuffle_epi8(v, _mm256_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+			                                              0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
+		};
+		const __m256i mask = _mm256_load_si256(reinterpret_cast<const __m256i*>(this));
+		const __m256i o = _mm256_and_si256(mask, _mm256_set1_epi64x(static_cast<long long>(occupied)));
+		const __m256i fwd = _mm256_sub_epi64(o, _mm256_set1_epi64x(static_cast<long long>(r)));
+		const __m256i rev = bswap(_mm256_sub_epi64(bswap(o), _mm256_set1_epi64x(static_cast<long long>(rr))));
+		const __m256i result = _mm256_and_si256(_mm256_xor_si256(fwd, rev), mask);
+
+		// Lane 0: rook (file only); lanes 1 and 2: bishop.
+		const __m256i rook_bishop =
+			_mm256_or_si256(result, _mm256_permute4x64_epi64(result, _MM_SHUFFLE(3, 1, 2, 0)));
+		return { static_cast<uint64_t>(_mm_extract_epi64(_mm256_castsi256_si128(rook_bishop), 1)),
+		         static_cast<uint64_t>(_mm_cvtsi128_si64(_mm256_castsi256_si128(result))) | rank };
+#else
+		const auto line = [&](uint64_t m) {
+			const uint64_t o = occupied & m;
+			return ((o - r) ^ byte_swap(byte_swap(o) - rr)) & m;
+		};
+		return { line(diag) | line(antidiag), line(file) | rank };
 #endif
-	}
-
-private:
-	// Mask = ray attacks with empty occupancy, minus the last square on the ray
-	// (the edge square: occupancy there can't change the attack pattern further).
-	static uint64_t ray_mask(Square sq, int dr, int df)
-	{
-		uint64_t mask = 0;
-		int r = sq_rank(sq);
-		int f = sq_file(sq);
-		for (;;)
-		{
-			const int nr = r + dr;
-			const int nf = f + df;
-			if (nr < 0 || nr > 7 || nf < 0 || nf > 7)
-				break;
-			const int nr2 = nr + dr;
-			const int nf2 = nf + df;
-			const bool is_edge = (nr2 < 0 || nr2 > 7 || nf2 < 0 || nf2 > 7);
-			if (!is_edge)
-				mask |= uint64_t(1) << sq_make(static_cast<Rank>(nr), static_cast<File>(nf));
-			r = nr; f = nf;
-		}
-		return mask;
-	}
-
-	static void fill(Entry* entries, uint64_t* data, const int (&dirs)[4][2])
-	{
-		size_t offset = 0;
-		for (int s = 0; s < SQUARE_NB; ++s)
-		{
-			const Square sq = static_cast<Square>(s);
-			uint64_t mask = 0;
-			for (auto& d : dirs)
-				mask |= ray_mask(sq, d[0], d[1]);
-
-			entries[sq].mask = mask;
-			entries[sq].attacks = data + offset;
-
-			const int bits = __builtin_popcountll(mask);
-			const size_t num_subsets = size_t(1) << bits;
-
-			uint64_t subset = 0;
-			for (size_t i = 0; i < num_subsets; ++i)
-			{
-				uint64_t attacks = 0;
-				for (auto& d : dirs)
-					attacks |= ray_attacks_raw(sq, d[0], d[1], subset);
-				const uint64_t idx = _pext_u64(subset, mask);
-				data[offset + idx] = attacks;
-				subset = (subset - mask) & mask;
-			}
-			offset += num_subsets;
-		}
 	}
 };
 
-const Slider_Tables SLIDERS;
-
-#endif
+alignas(64) constexpr auto SLIDER_MASKS = []() {
+	std::array<Slider_Masks, SQUARE_NB> t{};
+	for (int sq = 0; sq < SQUARE_NB; ++sq)
+		t[sq] = { line_mask(sq, 1, 0), line_mask(sq, 1, 1), line_mask(sq, 1, -1), 0,
+		          (uint64_t{1} << sq) * 2, (uint64_t{1} << (63 - sq)) * 2,
+		          RANK_ATTACKS[sq % 8].data(), 8 * (sq / 8) };
+	return t;
+}();
 
 }  // namespace
 
-#if CHESSTB_HAVE_PEXT
 Bitboard bishop_attacks(Square sq, Bitboard occupied)
 {
-	ASSERT(SLIDERS.ready);
-	const auto& e = SLIDERS.bishop[sq];
-	return Bitboard(e.attacks[_pext_u64(occupied.bits(), e.mask)]);
+	return Bitboard(SLIDER_MASKS[sq].both(occupied.bits()).first);
 }
 
 Bitboard rook_attacks(Square sq, Bitboard occupied)
 {
-	ASSERT(SLIDERS.ready);
-	const auto& e = SLIDERS.rook[sq];
-	return Bitboard(e.attacks[_pext_u64(occupied.bits(), e.mask)]);
-}
-#else
-Bitboard bishop_attacks(Square sq, Bitboard occupied)
-{
-	const uint64_t occ = occupied.bits();
-	return Bitboard(
-		  ray_attacks_raw(sq,  1,  1, occ)
-		| ray_attacks_raw(sq,  1, -1, occ)
-		| ray_attacks_raw(sq, -1,  1, occ)
-		| ray_attacks_raw(sq, -1, -1, occ));
+	return Bitboard(SLIDER_MASKS[sq].both(occupied.bits()).second);
 }
 
-Bitboard rook_attacks(Square sq, Bitboard occupied)
+Bitboard queen_attacks(Square sq, Bitboard occupied)
 {
-	const uint64_t occ = occupied.bits();
-	return Bitboard(
-		  ray_attacks_raw(sq,  1,  0, occ)
-		| ray_attacks_raw(sq, -1,  0, occ)
-		| ray_attacks_raw(sq,  0,  1, occ)
-		| ray_attacks_raw(sq,  0, -1, occ));
+	const auto [bishop, rook] = SLIDER_MASKS[sq].both(occupied.bits());
+	return Bitboard(bishop | rook);
 }
-#endif
 
 Bitboard piece_attacks(Piece pc, Square from, Bitboard occupied)
 {

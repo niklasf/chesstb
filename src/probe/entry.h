@@ -50,8 +50,6 @@ NODISCARD constexpr WDL_Entry wdl_from_storage(WDL_Stored s)
 	return static_cast<WDL_Entry>(s);
 }
 
-enum Packed_WDL_Entries : uint8_t {};
-
 inline constexpr size_t WDL_ENTRY_PACK_RATIO = 2;
 inline constexpr size_t WDL_ENTRY_BITS = 4;
 

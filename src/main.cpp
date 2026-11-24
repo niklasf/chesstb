@@ -95,33 +95,34 @@ NODISCARD static bool parse_args(int argc, char** argv, Options& out)
 			if (i + 1 >= argc) { std::cerr << flag << " needs an argument\n"; std::exit(1); }
 			return argv[++i];
 		};
-		if (const char* v = take("-r")) {
+		const char* v = nullptr;
+		if ((v = take("-r"))) {
 			std::stringstream ss(v);
 			for (std::string s; std::getline(ss, s, ',');)
 				if (!s.empty()) out.materials.push_back(s);
 		}
-		else if (const char* v = take("--list")) out.list_file = v;
-		else if (const char* v = take("-t"))
+		else if ((v = take("--list"))) out.list_file = v;
+		else if ((v = take("-t")))
 			out.num_threads = std::max<size_t>(1, std::strtoull(v, nullptr, 10));
-		else if (const char* v = take("--wdl"))  out.wdl_dirs.emplace_back(v);
-		else if (const char* v = take("--dtz"))  out.dtz_dirs.emplace_back(v);
-		else if (const char* v = take("--dtc"))  out.dtc_dirs.emplace_back(v);
-		else if (const char* v = take("--dtm"))  out.dtm_dirs.emplace_back(v);
-		else if (const char* v = take("--dtm50")) out.dtm50_dirs.emplace_back(v);
-		else if (const char* v = take("--tmp"))  out.tmp_dir = v;
+		else if ((v = take("--wdl")))  out.wdl_dirs.emplace_back(v);
+		else if ((v = take("--dtz")))  out.dtz_dirs.emplace_back(v);
+		else if ((v = take("--dtc")))  out.dtc_dirs.emplace_back(v);
+		else if ((v = take("--dtm")))  out.dtm_dirs.emplace_back(v);
+		else if ((v = take("--dtm50"))) out.dtm50_dirs.emplace_back(v);
+		else if ((v = take("--tmp")))  out.tmp_dir = v;
 		else if (a == "--builddtc")              out.build_dtc = true;
 		else if (a == "--builddtm")              out.build_dtm = true;
 		else if (a == "--builddtm50")            out.build_dtm50 = true;
 		else if (a == "--probe")                 out.probe = true;
 		else if (a == "--fleet")                 out.fleet = true;
-		else if (const char* v = take("--mem"))  {
+		else if ((v = take("--mem")))  {
 			out.mem_mib = std::strtoull(v, nullptr, 10);
 			if (out.mem_mib > 0 && out.mem_mib < 64) out.mem_mib = 64;
 		}
-		else if (const char* v = take("--cache"))
+		else if ((v = take("--cache")))
 			out.cache_mib = std::strtoull(v, nullptr, 10);
-		else if (const char* v = take("--enumerate")) out.enumerate_up_to = std::strtoull(v, nullptr, 10);
-		else if (const char* v = take("--info")) {
+		else if ((v = take("--enumerate"))) out.enumerate_up_to = std::strtoull(v, nullptr, 10);
+		else if ((v = take("--info"))) {
 			out.info_paths.emplace_back(v);
 			while (i + 1 < argc && argv[i + 1][0] != '-')
 				out.info_paths.emplace_back(argv[++i]);

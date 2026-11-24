@@ -4,7 +4,6 @@
 #include "chess/chess.h"
 #include "chess/piece_config.h"
 
-#include "util/compress.h"
 #include "util/memory.h"
 
 #include <cstdint>
@@ -32,26 +31,26 @@ void decode_segments(const Layered_Rank_Per_Color& pc, const Layered_Entry_Ref& 
 	{
 		case 0:
 			out.start[0] = 0;
-			out.value[0] = layered_rank_value(pc, ref.entry);
+			out.value[0] = rank_value(pc, ref.entry);
 			out.count = 1;
 			break;
 		case 1:
 			out.start[0] = 0;
-			out.value[0] = layered_rank_value(pc, ref.entry + 1);
+			out.value[0] = rank_value(pc, ref.entry + 1);
 			out.start[1] = static_cast<uint16_t>(ref.entry[0] & 0x7Fu);
 			out.count = 2;
 			if (!ref.draw_end)
-				out.value[1] = layered_rank_value(pc, ref.entry + 1 + eb);
+				out.value[1] = rank_value(pc, ref.entry + 1 + eb);
 			break;
 		case 2:
 			out.start[0] = 0;
-			out.value[0] = layered_rank_value(pc, ref.entry + 2);
+			out.value[0] = rank_value(pc, ref.entry + 2);
 			out.start[1] = ref.entry[0];
-			out.value[1] = layered_rank_value(pc, ref.entry + 2 + eb);
+			out.value[1] = rank_value(pc, ref.entry + 2 + eb);
 			out.start[2] = static_cast<uint16_t>(ref.entry[1] & 0x7Fu);
 			out.count = 3;
 			if (!ref.draw_end)
-				out.value[2] = layered_rank_value(pc, ref.entry + 2 + 2 * eb);
+				out.value[2] = rank_value(pc, ref.entry + 2 + 2 * eb);
 			break;
 		default:
 		{
@@ -70,7 +69,7 @@ void decode_segments(const Layered_Rank_Per_Color& pc, const Layered_Entry_Ref& 
 					out.start[n] = static_cast<uint16_t>(w * 64 + b);
 					// The hint omits the last rank, DRAW standing in for it.
 					if (!(ref.draw_end && n == k - 1))
-						out.value[n] = layered_rank_value(pc, ranks + n * eb);
+						out.value[n] = rank_value(pc, ranks + n * eb);
 					++n;
 				}
 			}
@@ -99,66 +98,6 @@ NODISCARD size_t budget_of_pack_index(size_t j)
 }
 
 }  // namespace
-
-void DTC_Traits::on_singular(Serial_Memory_Reader& reader, Per_Color&)
-{
-	if (reader.read<uint8_t>() != 0)
-		throw std::runtime_error("DTC singular value must be DRAW");
-}
-
-void DTC_Traits::parse_header(Serial_Memory_Reader& reader, Per_Color& pc,
-                              const Position_Index_Config& index_cfg,
-                              const std::filesystem::path& path)
-{
-	const uint32_t perm = reader.read<uint32_t>();
-	if (!index_permutation_config_is_valid(index_cfg, perm))
-		throw std::runtime_error("Invalid DTC index permutation config " + path.string());
-	pc.layout = make_index_storage_layout(index_cfg, perm);
-
-	pc.entry_bytes = reader.read<uint8_t>();
-	if (pc.entry_bytes != 1 && pc.entry_bytes != sizeof(uint16_t))
-		throw std::runtime_error("Bad DTC entry_bytes " + path.string());
-	pc.block_positions = reader.read<uint32_t>();
-	pc.block_cnt       = reader.read<uint64_t>();
-	pc.tail_positions  = reader.read<uint32_t>();
-	pc.data_size       = reader.read<uint64_t>();
-
-	const size_t num_ranks = reader.read<uint16_t>();
-	pc.rank_to_value.resize(num_ranks);
-	for (size_t r = 0; r < num_ranks; ++r)
-		pc.rank_to_value[r] = reader.read<uint16_t>();
-}
-
-void DTC_Traits::finalize(Serial_Memory_Reader& reader, Per_Color (&per_color)[COLOR_NB],
-                          const bool (&is_singular)[COLOR_NB], const bool (&is_dropped)[COLOR_NB])
-{
-	for (Color i : { WHITE, BLACK })
-	{
-		if (is_singular[i] || is_dropped[i]) continue;
-		Per_Color& pc = per_color[i];
-		const uint8_t log2_bu      = reader.read<uint8_t>();
-		const uint8_t sample_width = reader.read<uint8_t>();
-		const uint8_t offset_width = reader.read<uint8_t>();
-		const uint8_t usz_width    = reader.read<uint8_t>();
-		const uint8_t* mono_ptr = reader.caret();
-		const size_t mono_bytes = Mono_Uint_Vec::on_disk_bytes(
-			pc.block_cnt + 1, log2_bu, sample_width, offset_width);
-		reader.advance(mono_bytes);
-		const uint8_t* usz_ptr = reader.caret();
-		const size_t usz_bytes = Min0_Uint_Vec::on_disk_bytes(pc.block_cnt, usz_width);
-		reader.advance(usz_bytes);
-		pc.offsets = Mono_Uint_Vec(mono_ptr, pc.block_cnt + 1,
-		                           log2_bu, sample_width, offset_width);
-		pc.usizes = Min0_Uint_Vec(usz_ptr, pc.block_cnt, usz_width);
-	}
-	for (Color i : { WHITE, BLACK })
-	{
-		if (is_singular[i] || is_dropped[i]) continue;
-		reader.align(64);
-		per_color[i].compressed_data = reader.caret();
-		reader.advance(per_color[i].data_size);
-	}
-}
 
 DTC_Cell DTC_Traits::read(Per_Color& pc, bool is_singular, Board_Index pos,
                           WDL_Entry wdl, unsigned rule50)

@@ -1,5 +1,6 @@
 #include "transcribe/source_tables.h"
 
+#include "util/decompress.h"
 #include "util/math.h"
 
 #include <stdexcept>
@@ -175,9 +176,8 @@ NODISCARD uint16_t rank_cell(const Source_Rank_Per_Color& pc, Block_Cache& cache
 			(bid == pc.block_cnt - 1 && pc.tail_size != 0) ? pc.tail_size : pc.block_size;
 		const auto pr = pc.offsets.get2(bid);
 		auto buf = std::make_shared<std::vector<uint8_t>>(decode_sz, 0);
-		lzma_decompress_into(
-			Span<uint8_t>(buf->data(), decode_sz),
-			Const_Span<uint8_t>(pc.compressed_data + pr[0], pr[1] - pr[0]));
+		if (!lzma_decode(buf->data(), decode_sz, pc.compressed_data + pr[0], pr[1] - pr[0]))
+			print_and_abort("LZMA error when trying to decompress a block.\n");
 		return buf;
 	});
 
@@ -195,12 +195,6 @@ NODISCARD uint16_t rank_cell(const Source_Rank_Per_Color& pc, Block_Cache& cache
 namespace {
 
 constexpr size_t RS_PREFIX_STRIDE = 256;
-
-struct RS_State_Prefix
-{
-	uint32_t index;
-	uint8_t state;
-};
 
 struct RS_Prefix_Entry
 {
@@ -264,35 +258,49 @@ NODISCARD INLINE size_t popcount_bit_range(
 	return count;
 }
 
-INLINE void popcount_state_range(
-	const uint8_t* states, size_t bit_lo, size_t bit_hi,
-	uint32_t& num_single, uint32_t& num_double, uint32_t& num_multi)
+enum class RS_State_Class : uint8_t { SINGLE, DOUBLE, MULTI, NONCONST };
+
+template <RS_State_Class State>
+NODISCARD INLINE uint32_t tally_state_word(uint64_t word)
 {
 	constexpr uint64_t EVEN_BITS = 0x5555555555555555ull;
+	const uint64_t lo = word & EVEN_BITS;
+	const uint64_t hi = (word >> 1) & EVEN_BITS;
+	if constexpr (State == RS_State_Class::SINGLE)      return __builtin_popcountll(lo & ~hi);
+	else if constexpr (State == RS_State_Class::DOUBLE) return __builtin_popcountll(hi & ~lo);
+	else if constexpr (State == RS_State_Class::MULTI)  return __builtin_popcountll(lo & hi);
+	else                                                return __builtin_popcountll(lo | hi);
+}
+
+// f on each 64-bit word of the states in [bit_lo, bit_hi), the last one masked
+// to the range.
+template <typename F>
+void for_state_words(const uint8_t* states, size_t bit_lo, size_t bit_hi, F&& f)
+{
 	size_t bit = bit_lo;
-	while (bit + 64 <= bit_hi)
+	for (; bit + 64 <= bit_hi; bit += 64)
 	{
 		uint64_t word;
 		std::memcpy(&word, states + bit / 8, sizeof(word));
-		const uint64_t lo = word & EVEN_BITS;
-		const uint64_t hi = (word >> 1) & EVEN_BITS;
-		num_single += __builtin_popcountll(lo & ~hi);
-		num_double += __builtin_popcountll(hi & ~lo);
-		num_multi += __builtin_popcountll(lo & hi);
-		bit += 64;
+		f(word);
 	}
 	if (bit < bit_hi)
 	{
 		const size_t remaining = bit_hi - bit;
 		uint64_t word = 0;
 		std::memcpy(&word, states + bit / 8, (remaining + 7) / 8);
-		word &= (uint64_t{ 1 } << remaining) - 1;
-		const uint64_t lo = word & EVEN_BITS;
-		const uint64_t hi = (word >> 1) & EVEN_BITS;
-		num_single += __builtin_popcountll(lo & ~hi);
-		num_double += __builtin_popcountll(hi & ~lo);
-		num_multi += __builtin_popcountll(lo & hi);
+		f(word & ((uint64_t{ 1 } << remaining) - 1));
 	}
+}
+
+template <RS_State_Class State>
+NODISCARD uint32_t popcount_state_class(
+	const uint8_t* states, size_t bit_lo, size_t bit_hi)
+{
+	uint32_t count = 0;
+	for_state_words(states, bit_lo, bit_hi,
+		[&](uint64_t word) { count += tally_state_word<State>(word); });
+	return count;
 }
 
 INLINE void build_rs_prefix_index(
@@ -309,7 +317,11 @@ INLINE void build_rs_prefix_index(
 		const uint32_t ns_before = ns;
 		const uint32_t nd_before = nd;
 		const uint32_t nm_before = nm;
-		popcount_state_range(states, pos_lo * 2, pos_hi * 2, ns, nd, nm);
+		for_state_words(states, pos_lo * 2, pos_hi * 2, [&](uint64_t word) {
+			ns += tally_state_word<RS_State_Class::SINGLE>(word);
+			nd += tally_state_word<RS_State_Class::DOUBLE>(word);
+			nm += tally_state_word<RS_State_Class::MULTI>(word);
+		});
 		const uint32_t added_nonconst =
 			(ns - ns_before) + (nd - nd_before) + (nm - nm_before);
 		nc += static_cast<uint32_t>(pos_hi - pos_lo) - added_nonconst;
@@ -318,81 +330,6 @@ INLINE void build_rs_prefix_index(
 		nd_short += static_cast<uint32_t>(
 			popcount_bit_range(double_hints, nd_before, nd));
 	}
-}
-
-enum class RS_State_Class : uint8_t { SINGLE, DOUBLE, MULTI, NONCONST };
-
-template <RS_State_Class State>
-NODISCARD INLINE uint32_t tally_state_word(uint64_t word)
-{
-	constexpr uint64_t EVEN_BITS = 0x5555555555555555ull;
-	const uint64_t lo = word & EVEN_BITS;
-	const uint64_t hi = (word >> 1) & EVEN_BITS;
-	if constexpr (State == RS_State_Class::SINGLE)      return __builtin_popcountll(lo & ~hi);
-	else if constexpr (State == RS_State_Class::DOUBLE) return __builtin_popcountll(hi & ~lo);
-	else if constexpr (State == RS_State_Class::MULTI)  return __builtin_popcountll(lo & hi);
-	else                                                return __builtin_popcountll(lo | hi);
-}
-
-template <RS_State_Class State>
-NODISCARD uint32_t popcount_state_class(
-	const uint8_t* states, size_t bit_lo, size_t bit_hi)
-{
-	uint32_t count = 0;
-	size_t bit = bit_lo;
-	while (bit + 64 <= bit_hi)
-	{
-		uint64_t word;
-		std::memcpy(&word, states + bit / 8, sizeof(word));
-		count += tally_state_word<State>(word);
-		bit += 64;
-	}
-	if (bit < bit_hi)
-	{
-		const size_t remaining = bit_hi - bit;
-		uint64_t word = 0;
-		std::memcpy(&word, states + bit / 8, (remaining + 7) / 8);
-		word &= (uint64_t{ 1 } << remaining) - 1;
-		count += tally_state_word<State>(word);
-	}
-	return count;
-}
-
-NODISCARD INLINE RS_State_Prefix rs_state_prefix(
-	const uint8_t* states, const RS_Prefix_Entry* prefix, size_t pos)
-{
-	const size_t bit_pos = pos * 2;
-	const uint8_t state = (states[bit_pos / 8] >> (bit_pos % 8)) & 3u;
-	const size_t stride = pos / RS_PREFIX_STRIDE;
-	const RS_Prefix_Entry snap = prefix[stride];
-	const size_t bit_lo = stride * RS_PREFIX_STRIDE * 2;
-
-	uint32_t index;
-	switch (state)
-	{
-		case 1:
-			index = snap.n_single
-			      + popcount_state_class<RS_State_Class::SINGLE>(states, bit_lo, bit_pos);
-			break;
-		case 2:
-			index = snap.n_double
-			      + popcount_state_class<RS_State_Class::DOUBLE>(states, bit_lo, bit_pos);
-			break;
-		case 3:
-			index = snap.n_multi
-			      + popcount_state_class<RS_State_Class::MULTI>(states, bit_lo, bit_pos);
-			break;
-		default:
-		{
-			const uint32_t walked =
-				static_cast<uint32_t>(pos - stride * RS_PREFIX_STRIDE);
-			const uint32_t nonconst =
-				popcount_state_class<RS_State_Class::NONCONST>(states, bit_lo, bit_pos);
-			index = snap.n_const + walked - nonconst;
-			break;
-		}
-	}
-	return RS_State_Prefix{ index, state };
 }
 
 NODISCARD INLINE size_t single_record_width(const uint8_t* entry, size_t entry_bytes)
@@ -422,8 +359,8 @@ NODISCARD Block_Ptr decode_rs_block(const Source_Layered_Per_Color& pc, size_t b
 	auto blob = std::make_shared<std::vector<uint8_t>>(hints_off, 0);
 	uint8_t* const raw = blob->data() + payload_off;
 
-	lzma_decompress_into(Span<uint8_t>(raw, usz),
-		Const_Span<uint8_t>(pc.compressed_data + pair[0], pair[1] - pair[0]));
+	if (!lzma_decode(raw, usz, pc.compressed_data + pair[0], pair[1] - pair[0]))
+		print_and_abort("LZMA error when trying to decompress a block.\n");
 
 	uint32_t hdr[6];
 	std::memcpy(hdr, raw, 24);
@@ -753,14 +690,24 @@ NODISCARD static bool layered_locate(const Source_Layered_Per_Color& pc, Block_C
 	const uint8_t* const payload = blob + sizeof(RS_Cached_Block);
 	const auto* prefix = reinterpret_cast<const RS_Prefix_Entry*>(
 		blob + meta->prefix_off);
-	const RS_State_Prefix sp = rs_state_prefix(
-		payload + meta->state_bits_off, prefix, in_block);
-	const RS_Prefix_Entry& snap = prefix[in_block / RS_PREFIX_STRIDE];
-	const size_t idx = sp.index;
+	// The position's state, and its index among its state's entries: the
+	// stride's count plus those of its state since the stride began.
+	const uint8_t* states = payload + meta->state_bits_off;
+	const size_t bit_pos = in_block * 2;
+	const uint8_t st = (states[bit_pos / 8] >> (bit_pos % 8)) & 3u;
+	const size_t stride = in_block / RS_PREFIX_STRIDE;
+	const RS_Prefix_Entry& snap = prefix[stride];
+	const size_t bit_lo = stride * RS_PREFIX_STRIDE * 2;
+	const size_t idx =
+		st == 1 ? snap.n_single + popcount_state_class<RS_State_Class::SINGLE>(states, bit_lo, bit_pos)
+		: st == 2 ? snap.n_double + popcount_state_class<RS_State_Class::DOUBLE>(states, bit_lo, bit_pos)
+		: st == 3 ? snap.n_multi + popcount_state_class<RS_State_Class::MULTI>(states, bit_lo, bit_pos)
+		: snap.n_const + (bit_pos - bit_lo) / 2
+			- popcount_state_class<RS_State_Class::NONCONST>(states, bit_lo, bit_pos);
 	const size_t eb = pc.entry_bytes;
 
-	*state = sp.state;
-	switch (sp.state)
+	*state = st;
+	switch (st)
 	{
 		case 0:
 			*entry = payload + meta->const_stream_off + idx * eb;

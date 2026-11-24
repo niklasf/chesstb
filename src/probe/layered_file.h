@@ -3,9 +3,11 @@
 #include "probe/table_files.h"
 
 #include "util/cache.h"
-#include "util/compress.h"
+#include "util/decompress.h"
 #include "util/defines.h"
+#include "util/endian.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -38,30 +40,17 @@ NODISCARD INLINE size_t popcount_bit_range(const uint8_t* bm, size_t lo, size_t 
 	}
 	while (remaining >= 64)
 	{
-		uint64_t w;
-		std::memcpy(&w, bm + byte, 8);
-		pc += __builtin_popcountll(w);
+		pc += __builtin_popcountll(read_le<uint64_t>(bm + byte));
 		byte += 8;
 		remaining -= 64;
 	}
 	if (remaining)  // 1..63 bits, byte-aligned
 	{
-		uint64_t w = 0;
-		std::memcpy(&w, bm + byte, (remaining + 7) / 8);
-		w &= (uint64_t{1} << remaining) - 1;
-		pc += __builtin_popcountll(w);
+		const uint64_t w = read_le<uint64_t>(bm + byte, (remaining + 7) / 8);
+		pc += __builtin_popcountll(w & ((uint64_t{1} << remaining) - 1));
 	}
 	return pc;
 }
-
-// 2-bit state vector:
-//   00 CONST   01 SINGLE   10 DOUBLE   11 MULTI
-// Position p occupies bits 2p, 2p+1 within its byte.
-struct State_Prefix
-{
-	uint32_t index;        // count of same-class positions before `pos`
-	uint8_t  state_at_pos; // 0 CONST, 1 SINGLE, 2 DOUBLE, 3 MULTI
-};
 
 constexpr size_t LAYERED_PREFIX_STRIDE = 256;
 
@@ -90,48 +79,44 @@ struct Layered_Cached_Block
 };
 static_assert(sizeof(Layered_Cached_Block) % 4 == 0);
 
-// Tally SINGLE/DOUBLE/MULTI in [bit_lo, bit_hi); CONST = span - sum.
-INLINE void popcount_state_range(
-	const uint8_t* sb, size_t bit_lo, size_t bit_hi,
-	uint32_t& ns, uint32_t& nd, uint32_t& nm)
+// Position p's state is bits 2p and 2p+1 of the state vector: 00 CONST,
+// 01 SINGLE, 10 DOUBLE, 11 MULTI. NONCONST counts all but 00; CONST is the span
+// less NONCONST, as masked-out positions read 00.
+enum class State_Class : uint8_t { SINGLE, DOUBLE, MULTI, NONCONST };
+
+template <State_Class CLS>
+NODISCARD uint32_t tally_state_word(uint64_t w)
 {
 	constexpr uint64_t EVEN_MASK = 0x5555555555555555ull;
+	const uint64_t lo = w & EVEN_MASK;
+	const uint64_t hi = (w >> 1) & EVEN_MASK;
+	if constexpr (CLS == State_Class::SINGLE)      return __builtin_popcountll(lo & ~hi); // 01
+	else if constexpr (CLS == State_Class::DOUBLE) return __builtin_popcountll(hi & ~lo); // 10
+	else if constexpr (CLS == State_Class::MULTI)  return __builtin_popcountll(lo & hi);  // 11
+	else                                           return __builtin_popcountll(lo | hi);  // !=00
+}
+
+// f on each 64-bit word of the states in [bit_lo, bit_hi), the last one masked
+// to the range.
+template <typename F>
+void for_state_words(const uint8_t* sb, size_t bit_lo, size_t bit_hi, F&& f)
+{
 	size_t bit = bit_lo;
-	while (bit + 64 <= bit_hi)
-	{
-		uint64_t w;
-		std::memcpy(&w, sb + bit / 8, 8);
-		const uint64_t lo = w & EVEN_MASK;
-		const uint64_t hi = (w >> 1) & EVEN_MASK;
-		ns += __builtin_popcountll(lo & ~hi);  // 01
-		nd += __builtin_popcountll(hi & ~lo);  // 10
-		nm += __builtin_popcountll(lo & hi);   // 11
-		bit += 64;
-	}
+	for (; bit + 64 <= bit_hi; bit += 64)
+		f(read_le<uint64_t>(sb + bit / 8));
 	if (bit < bit_hi)
 	{
 		const size_t rem = bit_hi - bit;
-		uint64_t w = 0;
-		std::memcpy(&w, sb + bit / 8, (rem + 7) / 8);
-		const uint64_t mask = (rem == 64) ? ~uint64_t{0} : ((uint64_t{1} << rem) - 1);
-		w &= mask;
-		const uint64_t lo = w & EVEN_MASK;
-		const uint64_t hi = (w >> 1) & EVEN_MASK;
-		ns += __builtin_popcountll(lo & ~hi);
-		nd += __builtin_popcountll(hi & ~lo);
-		nm += __builtin_popcountll(lo & hi);
+		f(read_le<uint64_t>(sb + bit / 8, (rem + 7) / 8) & ((uint64_t{1} << rem) - 1));
 	}
 }
 
-// Record widths, by state and draw-end bit.
-NODISCARD INLINE size_t single_width(const uint8_t* e, size_t eb)
+template <State_Class CLS>
+NODISCARD uint32_t popcount_state_class(const uint8_t* sb, size_t bit_lo, size_t bit_hi)
 {
-	return (e[0] & 0x80u) ? 1 + eb : 1 + 2 * eb;
-}
-
-NODISCARD INLINE size_t double_width(const uint8_t* e, size_t eb)
-{
-	return (e[1] & 0x80u) ? 2 + 2 * eb : 2 + 3 * eb;
+	uint32_t count = 0;
+	for_state_words(sb, bit_lo, bit_hi, [&](uint64_t w) { count += tally_state_word<CLS>(w); });
+	return count;
 }
 
 INLINE void build_layered_prefix_index(
@@ -148,91 +133,17 @@ INLINE void build_layered_prefix_index(
 		const uint32_t ns_before = ns;
 		const uint32_t nd_before = nd;
 		const uint32_t nm_before = nm;
-		popcount_state_range(state_bits, p_lo * 2, p_hi * 2, ns, nd, nm);
+		for_state_words(state_bits, p_lo * 2, p_hi * 2, [&](uint64_t w) {
+			ns += tally_state_word<State_Class::SINGLE>(w);
+			nd += tally_state_word<State_Class::DOUBLE>(w);
+			nm += tally_state_word<State_Class::MULTI>(w);
+		});
 		const uint32_t added_nonc = (ns - ns_before) + (nd - nd_before) + (nm - nm_before);
 		nc += static_cast<uint32_t>(p_hi - p_lo) - added_nonc;
 		// Only the hints this stride added.
 		ns_short += static_cast<uint32_t>(popcount_bit_range(single_hints, ns_before, ns));
 		nd_short += static_cast<uint32_t>(popcount_bit_range(double_hints, nd_before, nd));
 	}
-}
-
-// NONCONST sums 01/10/11; CONST is derived as span - NONCONST since masked-out
-// groups read as 00.
-enum class State_Class : uint8_t { SINGLE, DOUBLE, MULTI, NONCONST };
-
-template <State_Class CLS>
-NODISCARD uint32_t tally_state_word(uint64_t w)
-{
-	constexpr uint64_t EVEN_MASK = 0x5555555555555555ull;
-	const uint64_t lo = w & EVEN_MASK;
-	const uint64_t hi = (w >> 1) & EVEN_MASK;
-	if constexpr (CLS == State_Class::SINGLE)      return __builtin_popcountll(lo & ~hi); // 01
-	else if constexpr (CLS == State_Class::DOUBLE) return __builtin_popcountll(hi & ~lo); // 10
-	else if constexpr (CLS == State_Class::MULTI)  return __builtin_popcountll(lo & hi);  // 11
-	else                                           return __builtin_popcountll(lo | hi);  // !=00
-}
-
-template <State_Class CLS>
-NODISCARD uint32_t popcount_state_class(const uint8_t* sb, size_t bit_lo, size_t bit_hi)
-{
-	uint32_t count = 0;
-	size_t bit = bit_lo;
-	while (bit + 64 <= bit_hi)
-	{
-		uint64_t w;
-		std::memcpy(&w, sb + bit / 8, 8);
-		count += tally_state_word<CLS>(w);
-		bit += 64;
-	}
-	if (bit < bit_hi)
-	{
-		const size_t rem = bit_hi - bit;
-		uint64_t w = 0;
-		std::memcpy(&w, sb + bit / 8, (rem + 7) / 8);
-		const uint64_t mask = (rem == 64) ? ~uint64_t{0} : ((uint64_t{1} << rem) - 1);
-		w &= mask;
-		count += tally_state_word<CLS>(w);
-	}
-	return count;
-}
-
-NODISCARD INLINE State_Prefix state_prefix_indexed(
-	const uint8_t* state_bits, const Layered_Prefix_Entry* prefix, size_t pos)
-{
-	const size_t bit_pos = pos * 2;
-	const uint8_t state_at_pos = (state_bits[bit_pos / 8] >> (bit_pos % 8)) & 3u;
-
-	const size_t stride_id = pos / LAYERED_PREFIX_STRIDE;
-	const Layered_Prefix_Entry snap = prefix[stride_id];
-	const size_t bit_lo = stride_id * LAYERED_PREFIX_STRIDE * 2;
-
-	uint32_t index;
-	switch (state_at_pos)
-	{
-		case 1:
-			index = snap.n_single
-			      + popcount_state_class<State_Class::SINGLE>(state_bits, bit_lo, bit_pos);
-			break;
-		case 2:
-			index = snap.n_double
-			      + popcount_state_class<State_Class::DOUBLE>(state_bits, bit_lo, bit_pos);
-			break;
-		case 3:
-			index = snap.n_multi
-			      + popcount_state_class<State_Class::MULTI>(state_bits, bit_lo, bit_pos);
-			break;
-		default: {
-			// CONST: walked positions minus non-CONST in range.
-			const uint32_t walk_positions =
-				static_cast<uint32_t>(pos - stride_id * LAYERED_PREFIX_STRIDE);
-			const uint32_t added_nonc =
-				popcount_state_class<State_Class::NONCONST>(state_bits, bit_lo, bit_pos);
-			index = snap.n_const + walk_positions - added_nonc;
-			break;
-		}
-	}
-	return State_Prefix{ index, state_at_pos };
 }
 
 // Cached buffer: [Layered_Cached_Block][payload][prefix][single_hints][double_hints].
@@ -258,20 +169,16 @@ Block_Ptr layered_get_block(Per_Color& pc, size_t block_id)
 	const size_t hints_off = prefix_off + prefix_bytes;
 
 	auto buf = std::make_shared<std::vector<uint8_t>>(hints_off, 0);
-	lzma_decompress_into(
-		Span<uint8_t>(buf->data() + payload_off, usz),
-		Const_Span<uint8_t>(pc.compressed_data + doff, dsz));
+	if (!lzma_decode(buf->data() + payload_off, usz, pc.compressed_data + doff, dsz))
+		throw std::runtime_error("LZMA error when trying to decompress a block.");
 
 	const uint8_t* payload = buf->data() + payload_off;
-	uint32_t hdr_positions, num_single, num_double, num_multi;
-	uint32_t single_stream_bytes, double_stream_bytes;
-	std::memcpy(&hdr_positions,        payload,      4);
-	std::memcpy(&num_single,           payload + 4,  4);
-	std::memcpy(&num_double,           payload + 8,  4);
-	std::memcpy(&num_multi,            payload + 12, 4);
-	std::memcpy(&single_stream_bytes,  payload + 16, 4);
-	std::memcpy(&double_stream_bytes,  payload + 20, 4);
-	ASSERT(hdr_positions == num_positions);
+	const uint32_t num_single = read_le<uint32_t>(payload + 4);
+	const uint32_t num_double = read_le<uint32_t>(payload + 8);
+	const uint32_t num_multi = read_le<uint32_t>(payload + 12);
+	const uint32_t single_stream_bytes = read_le<uint32_t>(payload + 16);
+	const uint32_t double_stream_bytes = read_le<uint32_t>(payload + 20);
+	ASSERT(read_le<uint32_t>(payload) == num_positions);
 
 	const size_t eb = pc.entry_bytes;
 	const size_t num_const = num_positions - num_single - num_double - num_multi;
@@ -306,14 +213,17 @@ Block_Ptr layered_get_block(Per_Color& pc, size_t block_id)
 	const uint8_t* e = payload + meta.single_stream_off;
 	for (uint32_t j = 0; j < num_single; ++j)
 	{
-		if (e[0] & 0x80u) single_hints[j >> 3] |= static_cast<uint8_t>(1u << (j & 7));
-		e += single_width(e, eb);
+		// A draw end drops one stored value from the record.
+		const bool draw_end = e[0] & 0x80u;
+		if (draw_end) single_hints[j >> 3] |= static_cast<uint8_t>(1u << (j & 7));
+		e += draw_end ? 1 + eb : 1 + 2 * eb;
 	}
 	e = payload + meta.double_stream_off;
 	for (uint32_t j = 0; j < num_double; ++j)
 	{
-		if (e[1] & 0x80u) double_hints[j >> 3] |= static_cast<uint8_t>(1u << (j & 7));
-		e += double_width(e, eb);
+		const bool draw_end = e[1] & 0x80u;
+		if (draw_end) double_hints[j >> 3] |= static_cast<uint8_t>(1u << (j & 7));
+		e += draw_end ? 2 + 2 * eb : 2 + 3 * eb;
 	}
 
 	auto* prefix = reinterpret_cast<Layered_Prefix_Entry*>(buf->data() + meta.prefix_off);
@@ -336,8 +246,8 @@ NODISCARD bool layered_locate_entry(
 	typename Traits::Per_Color& pc, Board_Index pos, Layered_Entry_Ref& out)
 {
 	const size_t ppb = pc.block_positions;
-	const size_t block_id = static_cast<size_t>(pos) / ppb;
-	const size_t pos_in_block = static_cast<size_t>(pos) % ppb;
+	const size_t block_id = static_cast<size_t>(pos / ppb);
+	const size_t pos_in_block = static_cast<size_t>(pos % ppb);
 
 	const auto pair_skip = pc.offsets.get2(block_id);
 	if (pair_skip[0] == pair_skip[1]) return false;
@@ -350,13 +260,23 @@ NODISCARD bool layered_locate_entry(
 		buf_data + meta->prefix_off);
 	const size_t eb = pc.entry_bytes;
 
-	const State_Prefix sp = state_prefix_indexed(
-		payload + meta->state_bits_off, prefix, pos_in_block);
-	const Layered_Prefix_Entry& snap = prefix[pos_in_block / LAYERED_PREFIX_STRIDE];
-	const size_t idx = sp.index;
+	// The position's state, and its index among its state's entries: the
+	// stride's count plus those of its state since the stride began.
+	const uint8_t* sb = payload + meta->state_bits_off;
+	const size_t bit_pos = pos_in_block * 2;
+	const uint8_t state = (sb[bit_pos / 8] >> (bit_pos % 8)) & 3u;
+	const size_t stride = pos_in_block / LAYERED_PREFIX_STRIDE;
+	const Layered_Prefix_Entry& snap = prefix[stride];
+	const size_t bit_lo = stride * LAYERED_PREFIX_STRIDE * 2;
+	const size_t idx =
+		state == 1 ? snap.n_single + popcount_state_class<State_Class::SINGLE>(sb, bit_lo, bit_pos)
+		: state == 2 ? snap.n_double + popcount_state_class<State_Class::DOUBLE>(sb, bit_lo, bit_pos)
+		: state == 3 ? snap.n_multi + popcount_state_class<State_Class::MULTI>(sb, bit_lo, bit_pos)
+		: snap.n_const + (bit_pos - bit_lo) / 2
+			- popcount_state_class<State_Class::NONCONST>(sb, bit_lo, bit_pos);
 
-	out.state = sp.state_at_pos;
-	switch (sp.state_at_pos)
+	out.state = state;
+	switch (state)
 	{
 		case 0:
 			out.entry = payload + meta->const_stream_off + idx * eb;
@@ -382,23 +302,13 @@ NODISCARD bool layered_locate_entry(
 			break;
 		}
 		default: {
-			const uint32_t* dir = reinterpret_cast<const uint32_t*>(
-				payload + meta->multi_dir_off);
-			out.entry = payload + meta->multi_data_off + dir[idx];
+			const uint8_t* dir = payload + meta->multi_dir_off;
+			out.entry = payload + meta->multi_data_off + read_le<uint32_t>(dir + 4 * idx);
 			out.draw_end = (out.entry[0] & 0x80u) != 0;
 			break;
 		}
 	}
 	return true;
-}
-
-template <typename Per_Color>
-NODISCARD uint16_t layered_rank_value(const Per_Color& pc, const uint8_t* p)
-{
-	if (pc.entry_bytes == 1) return pc.rank_to_value[*p];
-	uint16_t r;
-	std::memcpy(&r, p, 2);
-	return pc.rank_to_value[r];
 }
 
 // A MULTI record's changepoint bitmap, the BM_BYTES following the k byte, in
@@ -407,8 +317,9 @@ template <size_t BM_BYTES>
 NODISCARD INLINE std::array<uint64_t, (BM_BYTES + 7) / 8>
 layered_multi_bitmap(const uint8_t* entry)
 {
-	std::array<uint64_t, (BM_BYTES + 7) / 8> bm{};
-	std::memcpy(bm.data(), entry + 1, BM_BYTES);
+	std::array<uint64_t, (BM_BYTES + 7) / 8> bm;
+	for (size_t w = 0; w < bm.size(); ++w)
+		bm[w] = read_le<uint64_t>(entry + 1 + 8 * w, std::min<size_t>(8, BM_BYTES - 8 * w));
 	return bm;
 }
 

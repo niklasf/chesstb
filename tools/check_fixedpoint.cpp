@@ -186,8 +186,8 @@ struct Child_DTM {
 Child_DTM probe_child_dtm(Probe_Tables& tables, const Child_Pos& c)
 {
 	if (c.ps.is_bare_kings()) return {};
-	const Probe_Result pr = tables.probe(c.ps, c.pos, IGNORE_50MR);
-	if (pr.status != Probe_Result::Status::OK || !pr.has_dtm)
+	const Probe_Result pr = tables.probe(c.pos, SQ_END, IGNORE_50MR);
+	if (pr.wdl == WDL_Entry::ILLEGAL || !pr.has_dtm)
 		return { WDL_Entry::ILLEGAL, 0, true };
 	return { fold_dtm_wdl(pr.wdl), static_cast<uint16_t>(pr.dtm), false };
 }
@@ -271,8 +271,8 @@ struct Child_DTZ {
 Child_DTZ probe_child_dtz(Probe_Tables& tables, const Child_Pos& c)
 {
 	if (c.ps.is_bare_kings()) return {};
-	const Probe_Result pr = tables.probe(c.ps, c.pos, IGNORE_50MR);
-	if (pr.status != Probe_Result::Status::OK || !pr.has_dtz)
+	const Probe_Result pr = tables.probe(c.pos, SQ_END, IGNORE_50MR);
+	if (pr.wdl == WDL_Entry::ILLEGAL || !pr.has_dtz)
 		return { WDL_Entry::ILLEGAL, 0, false, false, true };
 	return { pr.wdl, static_cast<uint16_t>(pr.dtz), pr.dtz_rounded, false, false };
 }
@@ -424,8 +424,9 @@ File_State load_full_format(File& f, const Piece_Config& ps,
 
 	// Symmetric material stores WHITE only; load() marks BLACK dropped.
 	const auto [mat_key, mir_key] = ps.material_keys();
-	for (Color c : egtb_table_colors(mat_key == mir_key ? 1 : 2))
+	for (Color c : { WHITE, BLACK })
 	{
+		if (c == BLACK && mat_key == mir_key) break;
 		const char* kind = f.is_dropped[c]   ? "dropped"
 		                 : f.is_loss_only[c] ? "loss-only"
 		                 : f.is_relaxed[c]   ? "relaxed"
@@ -614,7 +615,7 @@ bool check_material(const Options& opt, const std::string& name)
 
 					if (opt.cursed_only)
 					{
-						const WDL_Entry w = dtz_tables.probe_wdl(ps, pos, SQ_END, 0);
+						const WDL_Entry w = dtz_tables.probe_wdl(pos, SQ_END, 0);
 						if (w != WDL_Entry::CURSED_WIN && w != WDL_Entry::BLESSED_LOSS)
 							continue;
 					}
@@ -623,8 +624,8 @@ bool check_material(const Options& opt, const std::string& name)
 
 					if (opt.check_dtm)
 					{
-						const Probe_Result pr = dtm_tables.probe(ps, pos, IGNORE_50MR);
-						if (pr.status == Probe_Result::Status::OK)
+						const Probe_Result pr = dtm_tables.probe(pos, SQ_END, IGNORE_50MR);
+						if (pr.wdl != WDL_Entry::ILLEGAL)
 						{
 							if (!counted) { ++s.scanned; counted = true; }
 							const DTM_Derived d = derive_dtm_from_children(dtm_tables, pos);
@@ -657,8 +658,8 @@ bool check_material(const Options& opt, const std::string& name)
 
 					if (opt.check_dtz)
 					{
-						const Probe_Result pr = dtz_tables.probe(ps, pos, IGNORE_50MR);
-						if (pr.status == Probe_Result::Status::OK)
+						const Probe_Result pr = dtz_tables.probe(pos, SQ_END, IGNORE_50MR);
+						if (pr.wdl != WDL_Entry::ILLEGAL)
 						{
 							if (!counted) { ++s.scanned; counted = true; }
 							const DTZ_Derived d = derive_dtz_from_children(dtz_tables, pos);

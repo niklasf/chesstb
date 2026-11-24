@@ -122,10 +122,6 @@ struct Bitboard
 		return Bitboard(x);
 	}
 
-	NODISCARD constexpr Bitboard maybe_mirror_files(bool mirr) const { return mirr ? mirror_files() : *this; }
-	NODISCARD constexpr Bitboard maybe_mirror_ranks(bool mirr) const { return mirr ? mirror_ranks() : *this; }
-	NODISCARD constexpr Bitboard maybe_mirror_diag (bool mirr) const { return mirr ? mirror_diag()  : *this; }
-
 	size_t pop_1st_bit()
 	{
 		const size_t r = lsb(m_bits);
@@ -183,8 +179,6 @@ struct Bitboard
 	{
 		m_bits = 0;
 	}
-
-	void display() const;
 
 private:
 	uint64_t m_bits;

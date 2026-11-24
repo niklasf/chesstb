@@ -709,7 +709,6 @@ void transcribe_wdl(In_Out_Param<Thread_Pool> thread_pool, const Piece_Config& p
 		bound.emplace(epsi, paths, thread_pool);
 	}
 
-
 	const size_t num_positions = epsi.num_positions();
 	const size_t block_size = opt.block_size != 0 ? opt.block_size : WDL_BLOCK_SIZE;
 	// 1024 against the rank path's 64: the same bytes at a sixteenth the block.

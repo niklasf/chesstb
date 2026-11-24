@@ -4,11 +4,9 @@
 //   ./tools/probe_fen --children "8/8/8/6B1/3k4/3B4/p7/1K6 w - - 0 1"
 //   ./tools/probe_fen --wdl ./wdl --dtz ./dtz --dtm ./dtm "8/8/8/8/4k3/8/Q7/K7 w"
 
-#include "chess/castling_group.h"
 #include "probe/probe.h"
 #include "util/cache.h"
 
-#include "chess/piece_config.h"
 #include "chess/position.h"
 
 #include <cstdio>
@@ -38,13 +36,6 @@ const char* wdl_name(WDL_Entry w)
 	return "?";
 }
 
-std::string fen_of(const Position& p)
-{
-	char buf[128] = {};
-	p.to_fen(Span(buf, sizeof(buf)));
-	return std::string(buf);
-}
-
 struct Options
 {
 	// Search directories in order; the flags append to the conventional layout.
@@ -56,7 +47,6 @@ struct Options
 	bool dump_children = false;
 	size_t cache_mib = DEFAULT_BLOCK_CACHE_BYTES / (1024 * 1024);
 };
-
 
 [[noreturn]] void usage(const char* argv0)
 {
@@ -108,51 +98,12 @@ unsigned fen_rule50(const std::string& fen)
 	return static_cast<unsigned>(std::strtoul(hmc.c_str(), nullptr, 10));
 }
 
-struct Root_Pos {
-	Position pos;
-	Piece_Config ps;
-	Square ep_square = SQ_END;
-	bool mirrored = false;
-};
-
-Piece_Config canonical_ps(const Position& pos)
-{
-	std::array<Piece, MAX_MAN> pieces;
-	size_t n = 0;
-	for (Piece pc : ALL_PIECES)
-		for (size_t i = 0, c = pos.piece_bb(pc).num_set_bits(); i < c; ++i)
-			pieces[n++] = pc;
-	return Piece_Config(Const_Span<Piece>(pieces.data(), n));
-}
-
-Material_Key literal_material_key(const Position& pos)
-{
-	Material_Key k;
-	for (Piece pc : ALL_PIECES)
-		for (size_t i = 0, c = pos.piece_bb(pc).num_set_bits(); i < c; ++i)
-			k.add_piece(pc);
-	return k;
-}
-
-Root_Pos canonical_root_position(const Position& input, const std::string& fen)
-{
-	Root_Pos root{input, canonical_ps(input), fen_ep_square(fen), false};
-	if (literal_material_key(input) != root.ps.base_material_key())
-	{
-		root.pos = input.mirror();
-		if (root.ep_square != SQ_END)
-			root.ep_square = sq_rank_mirror(root.ep_square);
-		root.mirrored = true;
-	}
-	return root;
-}
-
 void print_probe_result(const Probe_Result& r, const char* prefix)
 {
-	switch (r.status)
+	if (r.wdl == WDL_Entry::ILLEGAL)
 	{
-		case Probe_Result::Status::TB_NOT_FOUND: std::printf("%sTB not found\n", prefix); return;
-		case Probe_Result::Status::OK:           break;
+		std::printf("%sTB not found\n", prefix);
+		return;
 	}
 	std::printf("%swdl=%s", prefix, wdl_name(r.wdl));
 	if (r.has_dtz) std::printf(" dtz=%s%u", r.dtz_rounded ? "~" : "", static_cast<unsigned>(r.dtz));
@@ -240,8 +191,7 @@ std::optional<unsigned> anchor(const Probe_Result& root_r, const std::vector<Anc
 	return x;
 }
 
-void dump_children(Probe_Tables* tables, const Position& root,
-                   const Piece_Config& root_ps, Square ep_square,
+void dump_children(Probe_Tables* tables, const Position& root, Square ep_square,
                    unsigned rule50, const Probe_Result& root_r)
 {
 	const bool winning = root_r.wdl == WDL_Entry::WIN || root_r.wdl == WDL_Entry::CURSED_WIN;
@@ -258,9 +208,6 @@ void dump_children(Probe_Tables* tables, const Position& root,
 
 		Position child = root;
 		const Piece captured = child.do_move(m);
-		const Piece_Config child_ps = canonical_ps(child);
-		const bool same_material = (child_ps.name() == root_ps.name());
-
 		char mbuf[8] = {};
 		m.to_string(mbuf);
 		const bool is_cap = captured != PIECE_NONE;
@@ -274,15 +221,13 @@ void dump_children(Probe_Tables* tables, const Position& root,
 			                       "quiet";
 
 		char hbuf[128];
-		std::snprintf(hbuf, sizeof(hbuf), "    %-5s %-10s mat=%-8s stm=%s hmc=%u%s\n",
-			mbuf, kind, child_ps.name().c_str(), color_name(child.turn()), child_rule50,
-			same_material ? "" : " sub");
+		std::snprintf(hbuf, sizeof(hbuf), "    %-5s %-10s stm=%s hmc=%u%s\n",
+			mbuf, kind, color_name(child.turn()), child_rule50, is_cap || is_promo ? " sub" : "");
 		headers.emplace_back(hbuf);
 
 		Probe_Result r;
-		if (child_ps.is_bare_kings())
+		if (child.occupied().num_set_bits() == 2)
 		{
-			r.status = Probe_Result::Status::OK;
 			r.wdl = WDL_Entry::DRAW;
 			r.has_dtz = true; r.dtz = 0;
 			r.has_dtc = true; r.dtc_wdl = WDL_Entry::DRAW; r.dtc_order = 0; r.dtc = 0;
@@ -367,16 +312,13 @@ void probe_one(const Options& opt, Probe_Tables* tables, const std::string& fen)
 		return;
 	}
 
-	const Root_Pos root = canonical_root_position(pos, fen);
-
 	std::printf("  input: %s\n", fen.c_str());
-	if (root.mirrored)
-		std::printf("  canonical: %s\n", fen_of(root.pos).c_str());
 
+	const Square ep_square = fen_ep_square(fen);
 	const unsigned rule50 = fen_rule50(fen);
-	const Probe_Result r = tables->probe(root.ps, root.pos, root.ep_square, rule50);
+	const Probe_Result r = tables->probe(pos, ep_square, rule50);
 	std::printf("  hmc=%u\n", rule50);
-	if (opt.dump_children) dump_children(tables, root.pos, root.ps, root.ep_square, rule50, r);
+	if (opt.dump_children) dump_children(tables, pos, ep_square, rule50, r);
 	else print_probe_result(r, "  result: ");
 }
 

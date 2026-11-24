@@ -39,151 +39,99 @@ bool egtb_is_interrupt_requested(bool hard) noexcept
 	return req != Interrupt_Request::NONE;
 }
 
-std::array<Piece_Group::Placement, PIECE_CLASS_NB>
-placements_from_position(const Piece_Config_For_Gen& epsi, const Position& pos)
+// The index of `pos` once `mover` has gone between the squares of `move`, or
+// of `pos` itself for an empty `move`; the castling rights are `pos`'s.
+static Board_Index index_after_move(const Piece_Config_For_Gen& epsi, const Position& pos,
+                                    Piece mover, Bitboard move)
 {
-	std::array<Piece_Group::Placement, PIECE_CLASS_NB> out{};
+	auto piece_bb = [&](Piece pc) {
+		const Bitboard b = pos.piece_bb(pc);
+		return pc == mover ? b ^ move : b;
+	};
+	const size_t n = epsi.num_populated_classes();
+	const Piece_Class* classes = epsi.populated_classes();
 
-	out[WHITE_KINGS].add(pos.king_square(WHITE));
-	out[BLACK_KINGS].add(pos.king_square(BLACK));
-
-	for (size_t i = 0; i < epsi.num_populated_classes(); ++i)
-	{
-		const Piece_Class c = epsi.populated_classes()[i];
-		const Piece pc = epsi.group(c).piece();
-		Bitboard b = pos.piece_bb(pc);
-		while (b)
-			out[c].add(b.pop_first_square());
-	}
-
-	const bool has_pair = epsi.pair_group() != nullptr;
-	for (Piece_Class c : { WHITE_PAWNS, BLACK_PAWNS })
-	{
-		if (!epsi.is_populated(c) && !has_pair) continue;
-		const Piece pc = (c == WHITE_PAWNS) ? WHITE_PAWN : BLACK_PAWN;
-		Bitboard b = pos.piece_bb(pc);
-		while (b)
-			out[c].add(b.pop_first_square());
-	}
-	return out;
-}
-
-Board_Index canonical_board_index(
-	const Piece_Config_For_Gen& epsi,
-	std::array<Piece_Group::Placement, PIECE_CLASS_NB>& placements,
-	Const_Span<Square> white_castling_rooks,
-	Const_Span<Square> black_castling_rooks)
-{
-	const bool has_castling = epsi.has_castling();
-	if (!has_castling)
-		canonicalize_placements(inout_param(placements), epsi);
-	const Square wk = placements[WHITE_KINGS][0];
-	const Square bk = placements[BLACK_KINGS][0];
-	const int32_t king_slice_id =
-		has_castling
-			? epsi.king_slice_manager().castling_slice_of(
-				wk, bk, white_castling_rooks, black_castling_rooks)
-			: epsi.king_slice_manager().lookup(wk, bk).slice_id;
-	if (king_slice_id == SLICE_NONE)
-		return BOARD_INDEX_NONE;
+	Bitboard boards[PIECE_CLASS_NB];
+	for (size_t i = 0; i < n; ++i)
+		boards[classes[i]] = piece_bb(epsi.group(classes[i]).piece());
+	Bitboard white_pawns = piece_bb(WHITE_PAWN), black_pawns = piece_bb(BLACK_PAWN);
+	const Square wk = piece_bb(WHITE_KING).peek_first_square();
+	const Square bk = piece_bb(BLACK_KING).peek_first_square();
 
 	Decomposed_Board_Index dix;
-	dix.king_slice_id = king_slice_id;
-
-	if (epsi.pawn_slice_manager().has_pawns())
+	if (!epsi.has_castling())
 	{
-		const auto& w_pl = placements[WHITE_PAWNS];
-		const auto& b_pl = placements[BLACK_PAWNS];
-
-		Square pair_w = SQ_END, pair_b = SQ_END;
-		Square free_w[Piece_Group::MAX_PIECE_GROUP_SIZE];
-		Square free_b[Piece_Group::MAX_PIECE_GROUP_SIZE];
-		size_t nfw = 0, nfb = 0;
-
-		if (epsi.pair_group())
+		// The symmetry that takes the kings to their slice's squares, applied
+		// to every man.
+		const auto& look = epsi.king_slice_manager().lookup(wk, bk);
+		if (look.slice_id == SLICE_NONE) return BOARD_INDEX_NONE;
+		dix.king_slice_id = look.slice_id;
+		if (look.transform)
 		{
-			Pair_Group::canonical_pair(
-				Const_Span<Square>(w_pl.begin(), w_pl.size()),
-				Const_Span<Square>(b_pl.begin(), b_pl.size()), pair_w, pair_b);
-			for (size_t i = 0; i < w_pl.size(); ++i)
-				if (w_pl[i] != pair_w) free_w[nfw++] = w_pl[i];
-			for (size_t i = 0; i < b_pl.size(); ++i)
-				if (b_pl[i] != pair_b) free_b[nfb++] = b_pl[i];
+			for (size_t i = 0; i < n; ++i)
+				boards[classes[i]] = apply_transform(boards[classes[i]], look.transform);
+			white_pawns = apply_transform(white_pawns, look.transform);
+			black_pawns = apply_transform(black_pawns, look.transform);
 		}
-		else
-		{
-			for (size_t i = 0; i < w_pl.size(); ++i) free_w[nfw++] = w_pl[i];
-			for (size_t i = 0; i < b_pl.size(); ++i) free_b[nfb++] = b_pl[i];
-		}
+		for (size_t i = 0; i < n; ++i)
+			dix.within[classes[i]] = epsi.group(classes[i]).index_of(boards[classes[i]]);
 
-		dix.pawn_slice_id = epsi.pawn_slice_manager().lookup_from_squares(
-			pair_w, pair_b,
-			Const_Span<Square>(free_w, nfw),
-			Const_Span<Square>(free_b, nfb));
+		// Both kings on the diagonal: the a1-h8 mirror keeps their slice, so
+		// the men take whichever side ranks lower.
+		if (look.has_diag_stabilizer)
+		{
+			Piece_Group::Placement_Index alt[PIECE_CLASS_NB];
+			size_t within_cur = 0, within_alt = 0;
+			for (size_t i = 0; i < n; ++i)
+			{
+				const Piece_Class c = classes[i];
+				alt[c] = epsi.group(c).index_of(boards[c].mirror_diag());
+				within_cur += epsi.weight(c) * dix.within[c];
+				within_alt += epsi.weight(c) * alt[c];
+			}
+			if (within_alt < within_cur)
+				for (size_t i = 0; i < n; ++i) dix.within[classes[i]] = alt[classes[i]];
+		}
 	}
 	else
 	{
-		dix.pawn_slice_id = 0;
+		// A castling rook is not in its class, which holds only the free ones.
+		const Bitboard rooks[COLOR_NB] = { pos.castling_rooks(WHITE), pos.castling_rooks(BLACK) };
+		for (const Color c : { WHITE, BLACK })
+		{
+			const Piece_Class rook_class = make_piece_class(c, ROOKS);
+			if (epsi.is_populated(rook_class)) boards[rook_class] &= ~rooks[c];
+		}
+		dix.king_slice_id = epsi.king_slice_manager().castling_slice_of(wk, bk, rooks[WHITE], rooks[BLACK]);
+		if (dix.king_slice_id == SLICE_NONE) return BOARD_INDEX_NONE;
+		for (size_t i = 0; i < n; ++i)
+			dix.within[classes[i]] = epsi.group(classes[i]).index_of(boards[classes[i]]);
 	}
 
-	for (size_t i = 0; i < epsi.num_populated_classes(); ++i)
+	dix.pawn_slice_id = 0;
+	if (epsi.pawn_slice_manager().has_pawns())
 	{
-		const Piece_Class c = epsi.populated_classes()[i];
-		dix.within[c] = epsi.group(c).compound_index(placements[c]);
+		Square pair_w = SQ_END, pair_b = SQ_END;
+		if (epsi.pair_group())
+		{
+			Pair_Group::canonical_pair(white_pawns, black_pawns, pair_w, pair_b);
+			white_pawns ^= pair_w;
+			black_pawns ^= pair_b;
+		}
+		dix.pawn_slice_id = epsi.pawn_slice_manager().lookup(pair_w, pair_b, white_pawns, black_pawns);
 	}
 	return epsi.compose_board_index(dix);
 }
 
-Board_Index EGTB_Generator::next_quiet_index_fallback(
-	const Position_For_Gen& pos_gen, Piece mover, Square from, Square to) const
-{
-	auto placements = pos_gen.placements_unchecked();
-	placements[piece_class(mover)].move_square(from, to);
-	const Const_Span<Square> none(nullptr, size_t(0));
-	const int32_t king_slice_id = pos_gen.index().king_slice_id;
-	return canonical_board_index(
-		m_epsi, placements,
-		m_epsi.has_castling() ? m_epsi.castling_rook_squares(king_slice_id, WHITE) : none,
-		m_epsi.has_castling() ? m_epsi.castling_rook_squares(king_slice_id, BLACK) : none);
-}
-
-// Squares of one side's castling rooks, ascending by file.
-size_t castling_rook_squares(const Position& pos, Color c,
-                             Square out[Castling_Group::MAX_RIGHTS])
-{
-	size_t n = 0;
-	for (const bool h_side : { false, true })
-		if (pos.can_castle(c, h_side))
-			out[n++] = pos.castling_rook_square(c, h_side);
-	if (n == 2 && out[1] < out[0])
-		std::swap(out[0], out[1]);
-	return n;
-}
-
 Board_Index board_index_of_position(const Piece_Config_For_Gen& epsi, const Position& pos)
 {
-	auto p = placements_from_position(epsi, pos);
-	Square rooks[COLOR_NB][Castling_Group::MAX_RIGHTS];
-	size_t num_rooks[COLOR_NB] = { 0, 0 };
-	if (epsi.has_castling())
-	{
-		for (const Color c : { WHITE, BLACK })
-		{
-			num_rooks[c] = castling_rook_squares(pos, c, rooks[c]);
-			if (num_rooks[c] != epsi.castling_rights(c))
-				return BOARD_INDEX_NONE;
-			if (num_rooks[c] == 0) continue;
-			const Piece_Class rook_class = make_piece_class(c, ROOKS);
-			if (epsi.is_populated(rook_class))
-				for (size_t i = 0; i < num_rooks[c]; ++i)
-					p[rook_class].remove_square(rooks[c][i]);
-			else
-				p[rook_class].clear();
-		}
-	}
-	return canonical_board_index(epsi, p,
-	                             Const_Span<Square>(rooks[WHITE], num_rooks[WHITE]),
-	                             Const_Span<Square>(rooks[BLACK], num_rooks[BLACK]));
+	return index_after_move(epsi, pos, PIECE_NONE, Bitboard::make_empty());
+}
+
+Board_Index board_index_after_quiet_move(const Piece_Config_For_Gen& epsi, const Position& pos,
+                                         Piece mover, Square from, Square to)
+{
+	return index_after_move(epsi, pos, mover, square_bb(from) | square_bb(to));
 }
 
 static Piece_Config make_cap_promo_sub(const Piece_Config& ps,
@@ -1106,14 +1054,14 @@ Block_Source make_entry_block_source(
 		cache, color, num_workers);
 	return Block_Source{
 		output_total_bytes,
-		[within, spg, entry_bytes, total_blocks, num_workers](size_t first_block, size_t block_size) {
+		[within, spg, entry_bytes, total_blocks, num_workers](size_t first_block, size_t out_block_bytes) {
 			if (total_blocks - first_block <= num_workers)
 				return first_block + 1;
 
-			const size_t first_entry = first_block * block_size / entry_bytes;
+			const size_t first_entry = first_block * out_block_bytes / entry_bytes;
 			const size_t group = (first_entry / within) / spg;
 			const size_t group_end_entries = (group + 1) * spg * within;
-			return ceil_div(group_end_entries * entry_bytes, block_size);
+			return ceil_div(group_end_entries * entry_bytes, out_block_bytes);
 		},
 		[&src, worker_pins, within, spg, source_block_bytes, source_total_bytes, perm_plan](size_t worker_id, size_t block_id, Span<uint8_t> scratch) -> Const_Span<uint8_t> {
 			const size_t block_off = block_id * source_block_bytes;

@@ -150,7 +150,7 @@ static bool compare_material(const Options& opt, const char* name)
 
 						if (board_index_of_position(epsi, native, pos) != idx) continue;
 
-						const WDL_Entry got = tables.probe_wdl(ps, pos, SQ_END, 0);
+						const WDL_Entry got = tables.probe_wdl(pos, SQ_END, 0);
 						if (got == WDL_Entry::ILLEGAL) continue;
 
 						const Fathom_BBs bb = fathom_bbs(pos);

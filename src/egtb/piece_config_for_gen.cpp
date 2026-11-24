@@ -32,11 +32,6 @@ NODISCARD const King_Slice_Manager& castling_slice_mgr(size_t white_rights,
 	return *mgr;
 }
 
-Square diag_flip(Square s)
-{
-	return sq_make(static_cast<Rank>(sq_file(s)), static_cast<File>(sq_rank(s)));
-}
-
 }  // namespace
 
 bool Piece_Config_For_Gen::try_init()
@@ -144,11 +139,10 @@ bool Piece_Config_For_Gen::try_init()
 	return true;
 }
 
-Const_Span<Square> Piece_Config_For_Gen::castling_rook_squares(int32_t king_slice_id, Color c) const
+Bitboard Piece_Config_For_Gen::castling_rooks(int32_t king_slice_id, Color c) const
 {
 	ASSERT(m_has_castling);
-	const auto& rooks = m_king_slice_manager->castling_rooks_of_slice[king_slice_id][c];
-	return Const_Span<Square>(rooks.data(), castling_rights(c));
+	return m_king_slice_manager->castling_rooks_of_slice[king_slice_id][c];
 }
 
 void Piece_Config_For_Gen::prepare_orbit_weight_table() const
@@ -170,9 +164,8 @@ void Piece_Config_For_Gen::prepare_orbit_weight_table() const
 		diag_image[c].resize(n);
 		for (size_t idx = 0; idx < n; ++idx)
 		{
-			const auto& p = g.squares(static_cast<Piece_Group::Placement_Index>(idx));
-			const auto flipped = p.with_transformed_squares(diag_flip);
-			diag_image[c][idx] = g.compound_index(flipped);
+			const Bitboard b = g.squares(static_cast<Piece_Group::Placement_Index>(idx)).occupancy();
+			diag_image[c][idx] = g.index_of(b.mirror_diag());
 		}
 	}
 
@@ -214,8 +207,7 @@ uint8_t Piece_Config_For_Gen::orbit_weight(const Decomposed_Board_Index& d) cons
 
 	if (m_has_castling)
 		for (const Color c : { WHITE, BLACK })
-			for (const Square r : castling_rook_squares(d.king_slice_id, c))
-				occupied |= square_bb(r);
+			occupied |= castling_rooks(d.king_slice_id, c);
 
 	if (m_pawn_slice_manager->has_pawns())
 	{
@@ -403,8 +395,9 @@ bool Piece_Config_For_Gen::fill_board(
 			if (castling_rights(cc) == 0) continue;
 			const Piece rook = piece_make(cc, ROOK);
 			const Square castling_king = (cc == WHITE) ? wk : bk;
-			for (const Square rook_sq : castling_rook_squares(index.king_slice_id, cc))
+			for (Bitboard rooks = castling_rooks(index.king_slice_id, cc); rooks;)
 			{
+				const Square rook_sq = rooks.pop_first_square();
 				if constexpr (!ASSUME_LEGAL)
 					if (!board->is_empty(rook_sq)) return false;
 				const Bitboard rook_bb = square_bb(rook_sq);

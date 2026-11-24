@@ -164,7 +164,7 @@ bool Memory_Mapped_File::open_readonly(const char* file_name)
 #elif defined(OS_LINUX) || defined(OS_MACOS)
 
 	struct stat statbuf;
-	m_handle = open(file_name, O_RDONLY);
+	m_handle = open(file_name, O_RDONLY | O_CLOEXEC);
 	if (m_handle == sys_common::INVALID_HANDLE_VALUE)
 		return false;
 

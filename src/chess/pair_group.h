@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chess/bitboard.h"
 #include "chess/chess.h"
 
 #include "util/defines.h"
@@ -8,11 +9,9 @@
 #include <cstdint>
 #include <vector>
 
-// An opposing pawn pair (lowercase 'p'): a white and a black pawn on the same
-// file, white below black, neither able to pass or promote while the pair
-// stands. This ranks the joint placement, collapsing two free-pawn dimensions
-// into one. White ranks 2..6, black 3..7: C(6,2) x 8 files = 120 placements,
-// all 8 enumerated because the slice manager folds the mirror on top.
+// An opposing pawn pair ('p'): a white and a black pawn on one file, white
+// below black, so neither can pass or promote. White ranks 2..6, black 3..7:
+// 15 x 8 files = 120 placements; the slice manager folds the mirror on top.
 struct Pair_Group
 {
 	using Index = uint32_t;
@@ -64,50 +63,28 @@ struct Pair_Group
 		    && wr < br;
 	}
 
-	// The pair pawns are indistinguishable from free ones on a board, so the slot
-	// is positional: the opposing pair minimal by (file, white_rank, black_rank).
-	static void canonical_pair(Const_Span<Square> white_sqs,
-	                           Const_Span<Square> black_sqs,
-	                           Square& out_white, Square& out_black)
+	// Pair pawns look like free ones, so the pair is the minimal one by (file,
+	// white rank, black rank): on the first file holding one, the lowest white
+	// pawn with a black one above, then the lowest such black pawn. False if none.
+	static bool canonical_pair(Bitboard white, Bitboard black, Square& out_white, Square& out_black)
 	{
-		const bool ok = find_canonical(white_sqs, black_sqs, out_white, out_black);
-		ASSERT(ok);
-		(void)ok;
-	}
-
-	NODISCARD static bool find_canonical(Const_Span<Square> white_sqs,
-	                                     Const_Span<Square> black_sqs,
-	                                     Square& out_white, Square& out_black)
-	{
-		bool found = false;
-		for (size_t i = 0; i < white_sqs.size(); ++i)
-			for (size_t j = 0; j < black_sqs.size(); ++j)
+		for (File f = FILE_A; f < FILE_END; f = static_cast<File>(f + 1))
+		{
+			const Bitboard w = white & f, b = black & f;
+			if (w && b && w.peek_first_square() < b.peek_last_square())
 			{
-				const Square w = white_sqs[i], b = black_sqs[j];
-				if (!is_opposing_pair(w, b))
-					continue;
-				if (!found || less_pair(w, b, out_white, out_black))
-				{
-					out_white = w;
-					out_black = b;
-					found = true;
-				}
+				out_white = w.peek_first_square();
+				out_black = Bitboard(b.bits() & (~uint64_t{0} << out_white)).peek_first_square();
+				return true;
 			}
-		return found;
+		}
+		return false;
 	}
 
 private:
 	NODISCARD static int inv_key(Square w, Square b)
 	{
 		return static_cast<int>(w) * 64 + static_cast<int>(b);
-	}
-
-	// Lexicographic order on (file, white_rank, black_rank).
-	NODISCARD static bool less_pair(Square w1, Square b1, Square w2, Square b2)
-	{
-		if (sq_file(w1) != sq_file(w2)) return sq_file(w1) < sq_file(w2);
-		if (sq_rank(w1) != sq_rank(w2)) return sq_rank(w1) < sq_rank(w2);
-		return sq_rank(b1) < sq_rank(b2);
 	}
 
 	std::vector<Square> m_white;

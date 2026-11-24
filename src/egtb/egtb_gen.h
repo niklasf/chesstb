@@ -155,12 +155,6 @@ struct Position_For_Gen
 		return m_placements;
 	}
 
-	void get_fen(Span<char> out) const
-	{
-		init_board<false>();
-		m_board.to_fen(out);
-	}
-
 	void set_turn(Color c)
 	{
 		m_turn = c;
@@ -1151,20 +1145,11 @@ NODISCARD std::vector<Local> gather_egtb_info_parallel(
 	return locals;
 }
 
-NODISCARD std::array<Piece_Group::Placement, PIECE_CLASS_NB>
-	placements_from_position(const Piece_Config_For_Gen& epsi, const Position& pos);
-
-NODISCARD Board_Index canonical_board_index(
-	const Piece_Config_For_Gen& epsi,
-	std::array<Piece_Group::Placement, PIECE_CLASS_NB>& placements,
-	Const_Span<Square> white_castling_rooks = Const_Span<Square>(nullptr, size_t(0)),
-	Const_Span<Square> black_castling_rooks = Const_Span<Square>(nullptr, size_t(0)));
-
-// Squares of one side's castling rooks, ascending by file.
-NODISCARD size_t castling_rook_squares(const Position& pos, Color c,
-                                       Square out[Castling_Group::MAX_RIGHTS]);
-
 NODISCARD Board_Index board_index_of_position(const Piece_Config_For_Gen& epsi, const Position& pos);
+
+// The index after a quiet move of `mover` from `from` to `to` in `pos`.
+NODISCARD Board_Index board_index_after_quiet_move(const Piece_Config_For_Gen& epsi, const Position& pos,
+                                                   Piece mover, Square from, Square to);
 
 struct Slice_Reach_Scratch
 {
@@ -1289,9 +1274,6 @@ protected:
 
 	EGTB_Info m_info;
 
-	NODISCARD Board_Index NOINLINE next_quiet_index_fallback(
-		const Position_For_Gen& pos_gen, Piece mover, Square from, Square to) const;
-
 	NODISCARD FORCE_INLINE Board_Index next_quiet_index(
 		const Position_For_Gen& pos_gen, Move move) const
 	{
@@ -1314,10 +1296,9 @@ protected:
 			for (const Color cc : { WHITE, BLACK })
 			{
 				if (m_epsi.castling_rights(cc) == 0) continue;
-				if (from == board.king_square(cc)) return BOARD_INDEX_NONE;
-				for (const Square r : m_epsi.castling_rook_squares(dix.king_slice_id, cc))
-					if (from == r)
-						return BOARD_INDEX_NONE;
+				if (from == board.king_square(cc)
+				    || m_epsi.castling_rooks(dix.king_slice_id, cc).has_square(from))
+					return BOARD_INDEX_NONE;
 			}
 
 			if (piece_type(mover) == KING)
@@ -1335,13 +1316,13 @@ protected:
 			if (piece_color(mover) == WHITE) wk = to; else bk = to;
 			const auto& look = m_epsi.king_slice_manager().lookup(wk, bk);
 			if (look.slice_id == SLICE_NONE) return BOARD_INDEX_NONE;
-			if (look.transform != Symmetry_Transform::IDENTITY || look.has_diag_stabilizer)
-				return next_quiet_index_fallback(pos_gen, mover, from, to);
+			if (look.transform || look.has_diag_stabilizer)
+				return board_index_after_quiet_move(m_epsi, board, mover, from, to);
 			return m_epsi.change_king_slice(pos, dix.king_slice_id, look.slice_id);
 		}
 
 		if (m_epsi.king_slice_manager().slice_has_stabilizer[dix.king_slice_id])
-			return next_quiet_index_fallback(pos_gen, mover, from, to);
+			return board_index_after_quiet_move(m_epsi, board, mover, from, to);
 
 		if (piece_type(mover) == PAWN)
 		{
@@ -1389,8 +1370,7 @@ protected:
 			const size_t held = m_epsi.castling_rights(c);
 			if (held == 0) continue;
 			if (from == board.king_square(c)) { *giver = c; return held; }
-			for (const Square r : m_epsi.castling_rook_squares(ks, c))
-				if (from == r) { *giver = c; return 1; }
+			if (m_epsi.castling_rooks(ks, c).has_square(from)) { *giver = c; return 1; }
 		}
 		return 0;
 	}
@@ -1469,11 +1449,8 @@ protected:
 				? sq_make(sq_rank(move.from()), sq_file(move.to()))
 				: move.to();
 
-			bool victim_held_right = false;
-			if (piece_type(captured) == ROOK)
-				for (const Square r : m_epsi.castling_rook_squares(
-				         pos_for_gen.index().king_slice_id, victim))
-					if (cap_sq == r) { victim_held_right = true; break; }
+			const bool victim_held_right = piece_type(captured) == ROOK
+				&& m_epsi.castling_rooks(pos_for_gen.index().king_slice_id, victim).has_square(cap_sq);
 
 			Color giver = WHITE;
 			const size_t dropped = rights_dropped_by_move(pos_for_gen, move, out_param(giver));

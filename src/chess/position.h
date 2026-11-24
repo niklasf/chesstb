@@ -44,16 +44,19 @@ struct Position
 		return m_castling_rook[castling_right_index(c, h_side)];
 	}
 
-	void set_castling_right(Color c, bool h_side, Square rook_sq)
+	// The rooks of `c` still holding a castling right.
+	NODISCARD Bitboard castling_rooks(Color c) const
+	{
+		Bitboard b = Bitboard::make_empty();
+		for (const bool h_side : { false, true })
+			if (can_castle(c, h_side)) b |= castling_rook_square(c, h_side);
+		return b;
+	}
+
+		void set_castling_right(Color c, bool h_side, Square rook_sq)
 	{
 		m_castling |= castling_right(c, h_side);
 		m_castling_rook[castling_right_index(c, h_side)] = rook_sq;
-	}
-
-	void copy_castling_from(const Position& other)
-	{
-		m_castling = other.m_castling;
-		std::memcpy(m_castling_rook, other.m_castling_rook, sizeof(m_castling_rook));
 	}
 
 	NODISCARD bool castling_rights_are_consistent() const

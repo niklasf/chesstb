@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chess/bitboard.h"
 #include "chess/chess.h"
 #include "chess/piece_config.h"
 
@@ -51,36 +52,6 @@ struct Piece_Group
 
 		INLINE void clear() { m_size = 0; }
 
-		INLINE void move_square(Square from, Square to)
-		{
-			const size_t n = static_cast<size_t>(m_size);
-			size_t i = 0;
-			while (i < n && m_squares[i] != from) ++i;
-			ASSERT(i < n);
-			while (i + 1 < n && m_squares[i + 1] < to) { m_squares[i] = m_squares[i + 1]; ++i; }
-			while (i > 0     && m_squares[i - 1] > to) { m_squares[i] = m_squares[i - 1]; --i; }
-			m_squares[i] = to;
-		}
-
-		NODISCARD INLINE Placement with_moved_square(Square from, Square to) const
-		{
-			Placement dst = *this;
-			dst.move_square(from, to);
-			return dst;
-		}
-
-		// Apply `f` to every square, then re-sort.
-		template <typename F>
-		NODISCARD Placement with_transformed_squares(F&& f) const
-		{
-			Placement dst;
-			dst.m_size = m_size;
-			for (size_t i = 0; i < static_cast<size_t>(m_size); ++i)
-				dst.m_squares[i] = f(m_squares[i]);
-			dst.sort();
-			return dst;
-		}
-
 		INLINE void add(Square s)
 		{
 			ASSERT(static_cast<size_t>(m_size) < MAX_PIECE_GROUP_SIZE);
@@ -94,21 +65,11 @@ struct Piece_Group
 			m_size += 1;
 		}
 
-		// Append without sorting; caller must sort() afterward.
+		// Append a square above all the others.
 		INLINE void add_unsorted(Square s)
 		{
 			ASSERT(static_cast<size_t>(m_size) < MAX_PIECE_GROUP_SIZE);
 			m_squares[m_size++] = s;
-		}
-
-		INLINE void remove_square(Square s)
-		{
-			const size_t n = static_cast<size_t>(m_size);
-			size_t i = 0;
-			while (i < n && m_squares[i] != s) ++i;
-			if (i == n) return;
-			for (; i + 1 < n; ++i) m_squares[i] = m_squares[i + 1];
-			m_size -= 1;
 		}
 
 		INLINE void set_single(Square s)
@@ -117,23 +78,16 @@ struct Piece_Group
 			m_size = 1;
 		}
 
-		INLINE void sort()
-		{
-			std::sort(m_squares, m_squares + m_size);
-		}
-
-		NODISCARD bool are_all_squares_unique() const
-		{
-			for (size_t i = 1; i < static_cast<size_t>(m_size); ++i)
-				if (m_squares[i] == m_squares[i - 1])
-					return false;
-			return true;
-		}
-
 		NODISCARD INLINE Square& operator[](size_t i) { ASSERT(i < static_cast<size_t>(m_size)); return m_squares[i]; }
 		NODISCARD INLINE Square  operator[](size_t i) const { ASSERT(i < static_cast<size_t>(m_size)); return m_squares[i]; }
 
 		NODISCARD INLINE size_t size() const { return m_size; }
+		NODISCARD INLINE Bitboard occupancy() const
+		{
+			Bitboard bb = Bitboard::make_empty();
+			for (int8_t i = 0; i < m_size; ++i) bb |= m_squares[i];
+			return bb;
+		}
 
 		NODISCARD INLINE const Square* begin() const { return m_squares; }
 		NODISCARD INLINE       Square* begin()       { return m_squares; }
@@ -148,15 +102,16 @@ struct Piece_Group
 	// `legal_squares` need not be sorted; we sort/dedupe internally.
 	Piece_Group(Piece pc, size_t count, Const_Span<Square> legal_squares);
 
-	NODISCARD Placement_Index compound_index(const Placement& list) const
+	// Colex rank of the pieces on `b`: the bits pop in ascending order.
+	NODISCARD Placement_Index index_of(Bitboard b) const
 	{
-		ASSERT(list.size() == m_num_pieces);
+		ASSERT(popcnt(b.bits()) == m_num_pieces);
 		uint32_t rank = 0;
-		for (size_t i = 0; i < m_num_pieces; ++i)
+		for (size_t k = 1; b; ++k)
 		{
-			const int p = m_sq_to_pos[list[i]];
+			const int p = m_sq_to_pos[b.pop_first_square()];
 			ASSERT(p >= 0);
-			rank += BINOMIAL[static_cast<size_t>(p)][i + 1];
+			rank += BINOMIAL[static_cast<size_t>(p)][k];
 		}
 		ASSERT(rank < m_table_size);
 		return static_cast<Placement_Index>(rank);
@@ -175,7 +130,7 @@ struct Piece_Group
 		const Placement& list, Square from, Square to) const
 	{
 		if (m_non_unique_to_unique.empty())
-			return compound_index(list.with_moved_square(from, to));
+			return index_of((list.occupancy() ^ from) | to);
 		ASSERT(m_sq_to_pos[to] >= 0);
 		int32_t non_unique = 0;
 		for (size_t i = 0; i < m_num_pieces; ++i)
@@ -191,8 +146,6 @@ struct Piece_Group
 	NODISCARD size_t size() const { return m_num_pieces; }
 	NODISCARD size_t table_size() const { return m_table_size; }
 	NODISCARD Piece piece() const { return m_piece; }
-
-	NODISCARD bool sq_is_legal(Square sq) const { return m_sq_to_pos[sq] >= 0; }
 
 private:
 	Piece m_piece;

@@ -20,8 +20,6 @@ void load_wdl_table(
 	size_t block_size[COLOR_NB]{ 0, 0 };
 	size_t tail_size[COLOR_NB]{ 0, 0 };
 
-	size_t dict_size[COLOR_NB]{ 0, 0 };
-	const uint8_t* lp_dict[COLOR_NB]{ nullptr, nullptr };
 	const uint8_t* data[COLOR_NB]{ nullptr, nullptr };
 	size_t data_size[COLOR_NB]{ 0, 0 };
 	const uint8_t* offset_tb[COLOR_NB]{ nullptr, nullptr };
@@ -67,12 +65,10 @@ void load_wdl_table(
 		if (wdl->m_is_singular[i])
 			continue;
 
-		dict_size[i] = reader.read<uint16_t>();
-		if (dict_size[i] != 0)
-		{
-			lp_dict[i] = reader.caret();
-			reader.advance(dict_size[i]);
-		}
+		const size_t dict_size = reader.read<uint16_t>();
+		const uint8_t* dict = reader.caret();
+		reader.advance(dict_size);
+		wdl->m_per_color[i].dict = LZ4_Dict::load(Const_Span<uint8_t>(dict, dict_size));
 	}
 
 	uint8_t mono_params[COLOR_NB][3]{};  // log2_bu, sample_width, offset_width
@@ -121,7 +117,6 @@ void load_wdl_table(
 		pc.tail_size = tail_size[i];
 		pc.block_cnt = block_cnt[i];
 		pc.compressed_data = data[i];
-		pc.dict = LZ4_Dict::load(Const_Span(lp_dict[i], lp_dict[i] + dict_size[i]));
 		pc.offsets = Mono_Uint_Vec(offset_tb[i], block_cnt[i] + 1,
 		                           mono_params[i][0], mono_params[i][1], mono_params[i][2]);
 	}
@@ -540,9 +535,9 @@ void load_dtm_sub_flat(
 					}
 					else
 					{
-						const Span<uint8_t> scratch = decompress_scratch(decode_sz);
-						lzma_decompress_into(
-							scratch, Const_Span<uint8_t>(data[i] + doff, dsz));
+						Span<uint8_t> scratch = decompress_scratch(decode_sz);
+						if (!lzma_decode(scratch.data(), decode_sz, data[i] + doff, dsz))
+							print_and_abort("LZMA error when trying to decompress a block.\n");
 						const uint8_t* raw = scratch.data();
 
 						if (entry_bytes[i] == 1)
@@ -751,9 +746,9 @@ void load_dtm50_sub_flat(
 				}
 				else
 				{
-				const Span<uint8_t> scratch = decompress_scratch(usz);
-				lzma_decompress_into(
-					scratch, Const_Span<uint8_t>(data[i] + doff, dsz));
+				Span<uint8_t> scratch = decompress_scratch(usz);
+				if (!lzma_decode(scratch.data(), usz, data[i] + doff, dsz))
+					print_and_abort("LZMA error when trying to decompress a block.\n");
 
 				const uint8_t* raw = scratch.data();
 				const uint8_t* p = raw;
@@ -784,9 +779,9 @@ void load_dtm50_sub_flat(
 				const size_t double_long  = 2 + 3 * eb;
 				size_t const_idx = 0, multi_idx = 0;
 				size_t single_off = 0, double_off = 0;
-				auto read_rank = [eb](const uint8_t* p) -> uint16_t {
-					if (eb == 1) return *p;
-					uint16_t r; std::memcpy(&r, p, 2); return r;
+				auto read_rank = [eb](const uint8_t* q) -> uint16_t {
+					if (eb == 1) return *q;
+					uint16_t r; std::memcpy(&r, q, 2); return r;
 				};
 
 				for (size_t k = 0; k < this_bp; ++k)

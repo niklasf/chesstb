@@ -100,14 +100,9 @@ NODISCARD constexpr Bitboard pawn_attacks(Color c, Square sq) { return PAWN_ATTA
 NODISCARD constexpr Bitboard pawn_pushes(Color c, Square sq) { return PAWN_PUSHES[c][sq]; }
 NODISCARD constexpr Bitboard pawn_double_pushes(Color c, Square sq) { return PAWN_DOUBLE_PUSHES[c][sq]; }
 
-// Slider attacks. On x86 these read PEXT tables built once before main() by a
-// static initializer in attack.cpp; elsewhere they walk rays directly.
+// Slider attacks, by hyperbola quintessence (see attack.cpp).
 NODISCARD Bitboard bishop_attacks(Square sq, Bitboard occupied);
 NODISCARD Bitboard rook_attacks(Square sq, Bitboard occupied);
-
-NODISCARD INLINE Bitboard queen_attacks(Square sq, Bitboard occupied)
-{
-	return bishop_attacks(sq, occupied) | rook_attacks(sq, occupied);
-}
+NODISCARD Bitboard queen_attacks(Square sq, Bitboard occupied);
 
 NODISCARD Bitboard piece_attacks(Piece pc, Square from, Bitboard occupied);

@@ -21,7 +21,6 @@
 #include <iostream>
 #include <sstream>
 
-
 namespace {
 
 constexpr uint8_t SINGULAR_FLAG  = 0x80;
