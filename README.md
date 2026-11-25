@@ -86,8 +86,11 @@ The build produces:
 - `shrink`: postprocessor for shipping-format files
 - `transcribe`: re-encoder for shipping-format files
 
-`make tools` builds the `tools/probe_fen` diagnostic utility. See
-[Probe](#probe). The build has no dependencies beyond the vendored sources.
+`make lib` writes the prober as drop-in sources in namespace `chesstb` to
+`obj/libchesstb/`: `chesstb.h` and `chesstb.cpp`. `make tools` builds the
+`tools/probe_fen` diagnostic utility (see [Probe](#probe)); the tools are
+examples that use the library. The build has no dependencies beyond the
+vendored sources; `make lib` and `make tools` also need `python3`.
 
 ## Generate
 

@@ -15,6 +15,7 @@ namespace {
 constexpr Bitboard ANCHOR_FILE_MIRROR(0x0F0F0F0F0F0F0F0FULL);
 constexpr Bitboard ANCHOR_TRIANGLE(0x00000000080C0E0FULL);
 constexpr Bitboard MAIN_DIAG(0x8040201008040201ULL);
+constexpr Bitboard ABOVE_DIAG(0x7F3F1F0F07030100ULL);
 
 }  // namespace
 
@@ -120,8 +121,7 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s) : sym(s)
 	const Bitboard anchors = sym == Symmetry_Group::DIHEDRAL_8 ? ANCHOR_TRIANGLE : ANCHOR_FILE_MIRROR;
 
 	// Pass 1: enumerate canonical pairs. WK in fundamental domain, kings not
-	// adjacent, and (DIHEDRAL_8 + WK on main diag) tiebreak picks smaller BK
-	// vs diag-mirror(BK).
+	// adjacent, and (DIHEDRAL_8 + WK on main diag) BK not above the diagonal.
 	for (Square wk = SQ_A1; wk < SQ_END; wk = static_cast<Square>(wk + 1))
 	{
 		if (!anchors.has_square(wk)) continue;
@@ -131,12 +131,8 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group s) : sym(s)
 			if (bk == wk) continue;
 			if (king_attacks(wk).has_square(bk)) continue;
 
-			if (sym == Symmetry_Group::DIHEDRAL_8 && MAIN_DIAG.has_square(wk))
-			{
-				const Square bk_d = sq_diag_mirror(bk);
-				if (bk_d != bk && static_cast<int>(bk) > static_cast<int>(bk_d))
-					continue;
-			}
+			if (sym == Symmetry_Group::DIHEDRAL_8 && MAIN_DIAG.has_square(wk) && ABOVE_DIAG.has_square(bk))
+				continue;
 
 			const int32_t sid = static_cast<int32_t>(kings_of_slice.size());
 			kings_of_slice.emplace_back(wk, bk);

@@ -97,7 +97,7 @@ DTM_Final_Entry DTM_Generator::effective_opp_dtm_after_dp(Position_For_Gen& pos_
 
 	Position& p = pos_gen.board_unchecked();
 	const Color opp = color_opp(p.turn());
-	const uint8_t rights_before = p.castling();
+	const Bitboard rights_before = p.castling();
 	const Square ep_sq = ep_square_of_double_push(dp_move);
 	const Piece captured_by_dp = p.do_move(dp_move);
 
@@ -787,7 +787,7 @@ void DTM_Generator::save_to_disk(In_Out_Param<Thread_Pool> thread_pool, const EG
 		if (m_info.longest_win[me] > 0)
 		{
 			Position_For_Gen pos_gen(m_epsi, static_cast<Board_Index>(m_info.longest_idx[me]), me);
-			pos_gen.board_unchecked().to_fen(Span(m_info.longest_fen[me]));
+			position_to_fen(pos_gen.board_unchecked(), Span(m_info.longest_fen[me]));
 		}
 	}
 

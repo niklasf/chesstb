@@ -312,9 +312,6 @@ private:
 
 	std::unique_ptr<const Piece_Group> m_groups[PIECE_CLASS_NB];
 	size_t m_weights[PIECE_CLASS_NB]{};
-#ifdef CHESSTB_INDEX_INVERSE
-	int8_t m_piece_counts_cached[PIECE_NB]{};
-#endif
 };
 
 NODISCARD Board_Index board_index_of_position(

@@ -75,6 +75,7 @@ NODISCARD Bitboard free_square_unrank(size_t rank, size_t n, Bitboard black)
 constexpr Bitboard ANCHOR_FILE_MIRROR(0x0F0F0F0F0F0F0F0FULL);
 constexpr Bitboard ANCHOR_TRIANGLE(0x00000000080C0E0FULL);
 constexpr Bitboard MAIN_DIAG(0x8040201008040201ULL);
+constexpr Bitboard ABOVE_DIAG(0x7F3F1F0F07030100ULL);
 
 // The transform mask on every square of `b`: 1 mirrors the files, 2 the
 // ranks, 4 then the a1-h8 diagonal.
@@ -243,12 +244,8 @@ King_Slice_Manager::King_Slice_Manager(Symmetry_Group sym)
 			if (bk == wk) continue;
 			if (king_attacks(wk).has_square(bk)) continue;
 
-			if (sym == Symmetry_Group::DIHEDRAL_8 && MAIN_DIAG.has_square(wk))
-			{
-				const Square bk_d = sq_diag_mirror(bk);
-				if (bk_d != bk && static_cast<int>(bk) > static_cast<int>(bk_d))
-					continue;
-			}
+			if (sym == Symmetry_Group::DIHEDRAL_8 && MAIN_DIAG.has_square(wk) && ABOVE_DIAG.has_square(bk))
+				continue;
 
 			const int32_t sid = static_cast<int32_t>(num_slices++);
 #ifdef CHESSTB_INDEX_INVERSE
@@ -413,10 +410,6 @@ bool Position_Index_Config::try_init()
 	if (total_pawns > MAX_TOTAL_PAWNS)
 		return false;
 
-#ifdef CHESSTB_INDEX_INVERSE
-	for (size_t i = 0; i < PIECE_NB; ++i)
-		m_piece_counts_cached[i] = static_cast<int8_t>(counts[i]);
-#endif
 	const Symmetry_Group symmetry = pick_symmetry(*this);
 	ASSERT(has_castling() == (symmetry == Symmetry_Group::NONE));
 	m_king_slice_manager = has_castling()
@@ -433,19 +426,6 @@ bool Position_Index_Config::try_init()
 			m_groups[make_piece_class(c, ptcl)] =
 				counts[pc] ? std::make_unique<const Piece_Group>(pc, counts[pc]) : nullptr;
 		}
-
-#ifdef CHESSTB_INDEX_INVERSE
-	if (has_opposing_pair())
-	{
-		m_piece_counts_cached[WHITE_PAWN] += 1;
-		m_piece_counts_cached[BLACK_PAWN] += 1;
-	}
-#endif
-
-#ifdef CHESSTB_INDEX_INVERSE
-	for (const Color c : { WHITE, BLACK })
-		m_piece_counts_cached[piece_make(c, ROOK)] += static_cast<int8_t>(castling_rights(c));
-#endif
 
 	m_pawn_slice_manager = &pawn_slice_mgr(has_opposing_pair(), counts[WHITE_PAWN], counts[BLACK_PAWN]);
 	m_num_pawn_slices = m_pawn_slice_manager->num_slices();
@@ -539,7 +519,6 @@ bool Position_Index_Config::fill_board(
 	Out_Param<Position> board) const
 {
 	std::memset(board->m_pieces, 0, sizeof(board->m_pieces));
-	std::memset(board->m_squares, 0, sizeof(board->m_squares));
 
 	const King_Slice_Manager& ksm = king_slice_manager();
 	if (index.king_slice_id < 0
@@ -553,7 +532,6 @@ bool Position_Index_Config::fill_board(
 	// `pc` on the squares of `bb`; false if one is taken.
 	auto place = [&](Piece pc, Bitboard bb) {
 		if (bb & (white_occ | black_occ)) return false;
-		for (Bitboard t = bb; t;) board->m_squares[t.pop_first_square()] = pc;
 		board->m_pieces[pc] |= bb;
 		(piece_color(pc) == WHITE ? white_occ : black_occ) |= bb;
 		return true;
@@ -571,7 +549,7 @@ bool Position_Index_Config::fill_board(
 		if (!place(g.piece(), g.squares(index.within[m_populated_classes[i]]))) return false;
 	}
 
-	board->m_castling = NO_CASTLING;
+	board->m_castling_rooks = Bitboard::make_empty();
 
 	if (has_castling())
 	{
@@ -580,20 +558,12 @@ bool Position_Index_Config::fill_board(
 			if (castling_rights(cc) == 0) continue;
 			const Bitboard rooks = castling_rooks(index.king_slice_id, cc);
 			if (!place(piece_make(cc, ROOK), rooks)) return false;
-			const File king_file = sq_file(cc == WHITE ? wk : bk);
-			for (Bitboard t = rooks; t;)
-			{
-				const Square rook_sq = t.pop_first_square();
-				board->set_castling_right(cc, sq_file(rook_sq) > king_file, rook_sq);
-			}
+			board->m_castling_rooks |= rooks;
 		}
 	}
 
 	board->m_pieces[WHITE_OCCUPY] = white_occ;
 	board->m_pieces[BLACK_OCCUPY] = black_occ;
-	board->m_occupied = white_occ | black_occ;
-	std::memcpy(board->m_piece_counts, m_piece_counts_cached,
-	            sizeof(board->m_piece_counts));
 	return true;
 }
 #endif

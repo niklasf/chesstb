@@ -23,8 +23,10 @@ bool Piece_Config::sort_pieces(Span<Piece> pieces,
 			(piece_color(p) == WHITE ? white_key : black_key)[piece_type(p)]++;
 		white_key[ROOK] += static_cast<int8_t>(castling_rights[WHITE]);
 		black_key[ROOK] += static_cast<int8_t>(castling_rights[BLACK]);
+		// Counts compared from KING down to PAWN.
 		if (white_key != black_key)
-			do_swap = black_key > white_key;
+			do_swap = std::lexicographical_compare(white_key.rbegin(), white_key.rend(),
+			                                       black_key.rbegin(), black_key.rend());
 		else
 			// Same men on both sides, so the only thing left to order by is which
 			// side's rook kept its right. Fewer white rights is the canonical

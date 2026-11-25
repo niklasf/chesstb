@@ -11,6 +11,7 @@
 #include "transcribe/transcribe.h"
 
 #include "chess/attack.h"
+#include "chess/notation.h"
 #include "chess/piece_config.h"
 
 #include "egtb/egtb_gen.h"
@@ -344,7 +345,7 @@ int main(int argc, char** argv)
 		materials.reserve(opt.materials.size());
 		for (const std::string& name : opt.materials)
 		{
-			Piece_Config ps(name);
+			Piece_Config ps = piece_config_from_name(name);
 			const auto [material_key, mirror_key] = ps.material_keys();
 			if (opt.to.relaxed && !opt.do_wdl && material_key != mirror_key
 			    && ((!opt.dtc_dir.empty() && ps.has_pawns())

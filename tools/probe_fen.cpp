@@ -4,11 +4,9 @@
 //   ./tools/probe_fen --children "8/8/8/6B1/3k4/3B4/p7/1K6 w - - 0 1"
 //   ./tools/probe_fen --wdl ./wdl --dtz ./dtz --dtm ./dtm "8/8/8/8/4k3/8/Q7/K7 w"
 
-#include "probe/probe.h"
-#include "util/cache.h"
+#include "chesstb.h"
 
-#include "chess/position.h"
-
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <array>
@@ -18,6 +16,8 @@
 #include <string>
 #include <sstream>
 #include <vector>
+
+using namespace chesstb;
 
 namespace {
 
@@ -163,7 +163,7 @@ std::optional<unsigned> anchor(const Probe_Result& root_r, const std::vector<Anc
 		}
 		if (all_sides && attained) feasible.push_back(x);
 	}
-	ASSERT(!feasible.empty());
+	assert(!feasible.empty());
 	if (feasible.size() != 1) return std::nullopt;
 	const unsigned x = feasible[0];
 	for (size_t k = 0; k < options.size(); ++k)
@@ -200,7 +200,7 @@ void dump_children(Probe_Tables* tables, const Position& root, Square ep_square,
 	std::vector<Anchor_Option> options;
 	bool dtz_unknown = !root_r.has_dtz || root_r.wdl == WDL_Entry::DRAW;
 
-	auto visit = [&](Move m) FORCE_INLINE_LAMBDA {
+	auto visit = [&](Move m) {
 		const bool is_pawn = piece_type(root.piece_at(m.from())) == PAWN;
 		const bool zeroing = is_pawn || root.move_is_capture(m);
 		const unsigned child_rule50 = zeroing ? 0u : rule50 + 1u;
@@ -209,7 +209,7 @@ void dump_children(Probe_Tables* tables, const Position& root, Square ep_square,
 		Position child = root;
 		const Piece captured = child.do_move(m);
 		char mbuf[8] = {};
-		m.to_string(mbuf);
+		move_to_string(m, mbuf);
 		const bool is_cap = captured != PIECE_NONE;
 		const bool is_promo = m.is_promotion();
 		// Mate ends the game, so it outranks whatever mechanism delivered it.
@@ -247,7 +247,7 @@ void dump_children(Probe_Tables* tables, const Position& root, Square ep_square,
 		else
 		{
 			const bool cursed = r.wdl == WDL_Entry::CURSED_WIN || r.wdl == WDL_Entry::BLESSED_LOSS;
-			const bool exit = popcnt(child.castling()) < popcnt(root.castling());
+			const bool exit = child.castling().num_set_bits() < root.castling().num_set_bits();
 			for (unsigned c : dtz_candidates(r.dtz, r.dtz_rounded))
 			{
 				o.child.push_back(c);
@@ -296,7 +296,7 @@ const char* domain_error(const Position& pos)
 void probe_one(const Options& opt, Probe_Tables* tables, const std::string& fen)
 {
 	Position pos;
-	try { pos = Position::from_fen(fen); }
+	try { pos = position_from_fen(fen); }
 	catch (const std::exception& e) {
 		std::printf("---- invalid FEN\n");
 		std::printf("  input: %s\n", fen.c_str());

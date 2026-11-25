@@ -43,8 +43,6 @@ bool Piece_Config_For_Gen::try_init()
 	if (total_pawns > MAX_TOTAL_PAWNS)
 		return false;
 
-	for (size_t i = 0; i < PIECE_NB; ++i)
-		m_piece_counts_cached[i] = static_cast<int8_t>(counts[i]);
 	m_has_castling = Piece_Config::has_castling();
 	m_symmetry = pick_symmetry(*this);
 	static const King_Slice_Manager file_mirror(Symmetry_Group::FILE_MIRROR);
@@ -86,14 +84,7 @@ bool Piece_Config_For_Gen::try_init()
 	}
 
 	if (has_opposing_pair())
-	{
 		m_pair_group = std::make_unique<Pair_Group>();
-		m_piece_counts_cached[WHITE_PAWN] += 1;
-		m_piece_counts_cached[BLACK_PAWN] += 1;
-	}
-
-	for (const Color c : { WHITE, BLACK })
-		m_piece_counts_cached[piece_make(c, ROOK)] += static_cast<int8_t>(castling_rights(c));
 
 	m_pawn_slice_manager = std::make_unique<Pawn_Slice_Manager>(
 		pair_group(),
@@ -333,7 +324,7 @@ bool Piece_Config_For_Gen::fill_board(
 			{
 				const Square sq = placement[k];
 				if constexpr (!ASSUME_LEGAL)
-					if (!board->is_empty(sq)) return false;
+					if ((white_occ | black_occ).has_square(sq)) return false;
 				board->m_squares[sq] = pc;
 				bb |= square_bb(sq);
 			}
@@ -349,7 +340,7 @@ bool Piece_Config_For_Gen::fill_board(
 			const Square pw = m_pair_group->white_square(pd.pair_idx);
 			const Square pb = m_pair_group->black_square(pd.pair_idx);
 			if constexpr (!ASSUME_LEGAL)
-				if (!board->is_empty(pw) || !board->is_empty(pb)) return false;
+				if ((white_occ | black_occ) & (square_bb(pw) | square_bb(pb))) return false;
 			board->m_squares[pw] = WHITE_PAWN;
 			board->m_squares[pb] = BLACK_PAWN;
 			const Bitboard pwbb = square_bb(pw);
@@ -377,7 +368,7 @@ bool Piece_Config_For_Gen::fill_board(
 		{
 			const Square sq = placement[k];
 			if constexpr (!ASSUME_LEGAL)
-				if (!board->is_empty(sq)) return false;
+				if ((white_occ | black_occ).has_square(sq)) return false;
 			board->m_squares[sq] = pc;
 			bb |= square_bb(sq);
 		}
@@ -386,7 +377,7 @@ bool Piece_Config_For_Gen::fill_board(
 		color_occ |= bb;
 	}
 
-	board->m_castling = NO_CASTLING;
+	board->m_castling_rooks = Bitboard::make_empty();
 
 	if (m_has_castling)
 	{
@@ -394,26 +385,22 @@ bool Piece_Config_For_Gen::fill_board(
 		{
 			if (castling_rights(cc) == 0) continue;
 			const Piece rook = piece_make(cc, ROOK);
-			const Square castling_king = (cc == WHITE) ? wk : bk;
 			for (Bitboard rooks = castling_rooks(index.king_slice_id, cc); rooks;)
 			{
 				const Square rook_sq = rooks.pop_first_square();
 				if constexpr (!ASSUME_LEGAL)
-					if (!board->is_empty(rook_sq)) return false;
+					if ((white_occ | black_occ).has_square(rook_sq)) return false;
 				const Bitboard rook_bb = square_bb(rook_sq);
 				board->m_squares[rook_sq] = rook;
 				board->m_pieces[rook] |= rook_bb;
 				((cc == WHITE) ? white_occ : black_occ) |= rook_bb;
-				board->set_castling_right(cc, sq_file(rook_sq) > sq_file(castling_king), rook_sq);
+				board->m_castling_rooks |= rook_bb;
 			}
 		}
 	}
 
 	board->m_pieces[WHITE_OCCUPY] = white_occ;
 	board->m_pieces[BLACK_OCCUPY] = black_occ;
-	board->m_occupied = white_occ | black_occ;
-	std::memcpy(board->m_piece_counts, m_piece_counts_cached,
-	            sizeof(board->m_piece_counts));
 	return true;
 }
 
@@ -453,7 +440,6 @@ bool Piece_Config_For_Gen::patch_board(
 		const Piece pc = g.piece();
 		board->m_pieces[pc] ^= bb;
 		board->m_pieces[piece_occupy(piece_color(pc))] ^= bb;
-		board->m_occupied ^= bb;
 	}
 
 	for (size_t i = 0; i < num_changed; ++i)
@@ -472,7 +458,6 @@ bool Piece_Config_For_Gen::patch_board(
 		}
 		board->m_pieces[pc] |= bb;
 		board->m_pieces[piece_occupy(piece_color(pc))] |= bb;
-		board->m_occupied |= bb;
 		(*placements)[c] = np;
 	}
 	return true;

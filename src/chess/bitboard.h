@@ -10,11 +10,6 @@
 // Plain 64-bit bitboard. Square index = bit index (a1=bit 0, h8=bit 63).
 struct Bitboard
 {
-	NODISCARD static constexpr Bitboard make_board_mask()
-	{
-		return Bitboard(~uint64_t(0));
-	}
-
 	NODISCARD static constexpr Bitboard make_empty()
 	{
 		return Bitboard(uint64_t(0));
@@ -84,8 +79,6 @@ struct Bitboard
 	NODISCARD constexpr operator bool() const { return m_bits != 0; }
 	NODISCARD constexpr bool empty() const { return m_bits == 0; }
 
-	NODISCARD size_t peek_1st_bit() const { return lsb(m_bits); }
-
 	NODISCARD constexpr Bitboard mirror_files() const
 	{
 		uint64_t x = m_bits;
@@ -132,11 +125,6 @@ struct Bitboard
 	NODISCARD size_t num_set_bits() const
 	{
 		return popcnt(m_bits);
-	}
-
-	NODISCARD bool has_only_one_set_bit() const
-	{
-		return m_bits != 0 && (m_bits & (m_bits - 1)) == 0;
 	}
 
 	Bitboard& set_bit(size_t idx)

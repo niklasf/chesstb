@@ -199,7 +199,7 @@ For (c), full decoding fails at every overlap cell, where a man would be placed 
 
 **Lemma 3.13 (castling cells round-trip).** In a castling material, every cell C whose full decoding succeeds satisfies I(decode C) = C. This covers every Chess960 placement: one right with the king on any file and its rook on either side of it, and two rights with rook files lo < k < hi, where k is the king's file.
 
-*Proof.* Full decoding clears the rights and, for each castling rook r of color c in C's king slice, sets c's h-side right if file(r) > file(k\_c) and its a-side right otherwise, recording r's square. With two rights the grouping enumerates only lo < k < hi, so the sides are distinct. Reading the recorded squares a-side first lists the rooks in the grouping's increasing file order. So the rights counts equal the material's, and the canonical index recovers the placement through its injective base-9 key over the king file and rook files (an absent second rook keyed as 8). The free-king lookup returns C's king slice (Theorem 3.12(c)). A free rook on a castling-rook square would make an overlap cell, whose decoding fails, so removing those squares from the rook class leaves exactly the free rooks and C's within digits. The group is trivial, and the pawn digit is recomputed by Lemma 3.10. ∎
+*Proof.* Full decoding sets the castling rooks to those of C's king slice; a rook r of color c holds the h-side right if file(r) > file(k\_c) and the a-side right otherwise. With two rights the grouping enumerates only lo < k < hi, so the sides are distinct. Encoding reads the rooks as a square set, in increasing file order, which is the grouping's order. So the rights counts equal the material's, and the canonical index recovers the placement through its injective base-9 key over the king file and rook files (an absent second rook keyed as 8). The free-king lookup returns C's king slice (Theorem 3.12(c)). A free rook on a castling-rook square would make an overlap cell, whose decoding fails, so removing those squares from the rook class leaves exactly the free rooks and C's within digits. The group is trivial, and the pawn digit is recomputed by Lemma 3.10. ∎
 
 **Theorem 3.14 (orbit weights).** For each cell, the orbit weight equals the size of the orbit the cell represents, or 0 for overlap and phantom cells. Hence Σ weights = \|D(M)\|, the number of legal placements.
 
@@ -242,7 +242,7 @@ An unchecked decode of an overlap-free cell returns true, so the cache holds onl
 
 **Lemma 3.20 (castling with coincident squares).** Making and then unmaking a castling move is exact for every castling placement. This includes placements where the king's destination is the rook's origin, where the king already stands on its destination, and where the rook already stands on its destination.
 
-*Proof.* Let A = {k₀, r₀} be the origins and B = {k₁, r₁} the destinations, with k₀ ≠ r₀ and k₁ ≠ r₁. Making the move empties both origins before placing both men, so every square is right whichever coincide. The king's and rook's sets change by {k₀} Δ {k₁} and {r₀} Δ {r₁}, and the occupancy and mover's color set by A Δ B: squares in A ∩ B stay occupied, those in A ∖ B are vacated, and those in B ∖ A were empty, since the castling path must be empty apart from k₀ and r₀. So the occupancy becomes (occ ∖ A) ∪ B. No move writes the rights' rook squares. Unmaking restores the rights first, so it reads the same r₀, and reverses the same differences and assignments. ∎
+*Proof.* Let A = {k₀, r₀} be the origins and B = {k₁, r₁} the destinations, with k₀ ≠ r₀ and k₁ ≠ r₁. Making the move empties both origins before placing both men, so every square is right whichever coincide. The king's and rook's sets change by {k₀} Δ {k₁} and {r₀} Δ {r₁}, and the occupancy and mover's color set by A Δ B: squares in A ∩ B stay occupied, those in A ∖ B are vacated, and those in B ∖ A were empty, since the castling path must be empty apart from k₀ and r₀. So the occupancy becomes (occ ∖ A) ∪ B. The move names r₀ as its destination, so unmaking reverses the same differences and assignments. ∎
 
 ## 4. Well-founded scheduling
 
@@ -1402,7 +1402,7 @@ A skipped block is filled with DRAW. By Theorem 11.24, no legal cell of a skippe
 
 *Proof.* Stored offsets are prefix sums of compressed block sizes, and the writer places block k at its region base plus that sum. Writer, reader and shrinking tool compute the same bases: from the header end of Lemma 11.19, each rounds up to a multiple of 64 before a color's region and advances by its compressed total after it. ∎
 
-**Lemma 11.21 (checksum).** The checksum that the writer appends equals the XXH64 hash of all preceding bytes of the file, which is what the reader verifies, and the file size is ≡ 8 (mod 64).
+**Lemma 11.21 (checksum).** The checksum that the writer appends equals the XXH64 hash of all preceding bytes of the file, and the file size is ≡ 8 (mod 64).
 
 *Proof.* Header fields and padding are hashed as written. Block data, written concurrently into the disjoint ranges of Lemma 11.20, are hashed serially in block order after all block writes finish, so streaming XXH64 sees the file's bytes in increasing order. The last write pads to a multiple of 64, and the 8-byte digest follows. The shrinking tool writes and hashes sequentially. ∎
 

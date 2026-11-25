@@ -10,6 +10,7 @@
 #include "chess/chess.h"
 #include "chess/position.h"
 #include "chess/move.h"
+#include "chess/notation.h"
 #include "chess/piece_config.h"
 
 #include "util/allocation.h"
@@ -1393,7 +1394,7 @@ protected:
 		ASSERT(e.epsi != nullptr);
 
 		Position& p = pos_for_gen.board_unchecked();
-		const uint8_t rights_before = p.castling();
+		const Bitboard rights_before = p.castling();
 		const Piece captured = p.do_move(move);
 		const Board_Index idx = e.mirror
 			? board_index_of_position(*e.epsi, p.mirror())
@@ -1505,7 +1506,7 @@ protected:
 		*sub_epsi_out = sub;
 		*sub_color = read_color;
 
-		const uint8_t rights_before = p.castling();
+		const Bitboard rights_before = p.castling();
 		const Piece captured_by_move = p.do_move(move);
 
 		Board_Index result;

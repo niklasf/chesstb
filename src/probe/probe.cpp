@@ -306,7 +306,7 @@ private:
 NODISCARD bool is_cursed_exit(const Position& parent, const Child_Pos& c, WDL_Entry child_wdl)
 {
 	return (child_wdl == WDL_Entry::CURSED_WIN || child_wdl == WDL_Entry::BLESSED_LOSS)
-		&& popcnt(c.pos.castling()) < popcnt(parent.castling());
+		&& c.pos.castling().num_set_bits() < parent.castling().num_set_bits();
 }
 
 NODISCARD uint16_t quiet_move_dtz(uint16_t child_dtz, bool cursed_exit, bool child_rounded)
@@ -1556,11 +1556,15 @@ Canonical_Root root_for(const Position& pos, Square ep_square, bool castling, Sq
 	std::array<Piece, MAX_MAN> pieces;
 	size_t n = 0;
 	Material_Key key;
-	for (Piece pc : ALL_PIECES)
-		for (size_t k = popcnt((pos.piece_bb(pc) & ~excluded).bits()); k > 0; --k)
+	for (const Color c : { WHITE, BLACK })
+		for (int t = PAWN; t <= KING; ++t)
 		{
-			pieces[n++] = pc;
-			key.add_piece(pc);
+			const Piece pc = piece_make(c, Piece_Type(t));
+			for (size_t k = popcnt((pos.piece_bb(pc) & ~excluded).bits()); k > 0; --k)
+			{
+				pieces[n++] = pc;
+				key.add_piece(pc);
+			}
 		}
 
 	Piece_Config ps(Const_Span<Piece>(pieces.data(), n), rights);
@@ -1675,7 +1679,7 @@ Canonical_Root Probe_Tables::Impl::canonical_root(Position pos, Square ep_square
 		return { *hit->ps, pos.mirror(), ep_square != SQ_END ? sq_rank_mirror(ep_square) : SQ_END, true };
 	}
 
-	const bool castling = pos.castling() != NO_CASTLING;
+	const bool castling = pos.castling();
 	std::optional<Canonical_Root> r;
 	if (pw != SQ_END) r = root_for(pos, ep_square, castling, pw, pb);
 	if (!r || open_wdl(r->ps) == nullptr) r = root_for(pos, ep_square, castling, SQ_END, SQ_END);

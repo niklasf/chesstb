@@ -10,7 +10,7 @@ LDFLAGS  ?= -pthread
 # movegen-driving targets, ~50s of serial LTO inlining for anything linking
 # src/probe, so the tools opt out. One binary must not mix tagged and untagged
 # TUs: always_inline is part of the definition, so a mismatch violates ODR.
-GEN_DEFS := -DCHESSTB_GEN
+GEN_DEFS := -DCHESSTB_GEN -DCHESSTB_NOTATION
 
 # Command echo: quiet by default, `make V=1` prints the full command lines.
 V ?= 0
@@ -71,7 +71,7 @@ ifeq ($(CXX_IS_GCC),1)
 $(OBJDIR)/lib/LZMA/LzmaEnc.o: CFLAGS += -Wno-dangling-pointer
 endif
 
-.PHONY: all tools clean
+.PHONY: all tools lib clean
 all: chesstb shrink transcribe
 
 chesstb: src/main.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(HDRS) Makefile
@@ -97,6 +97,9 @@ shrink: $(SHRINK_CXX) $(SHRINK_C_OBJ) $(HDRS) Makefile
 
 tools:
 	$(Q)$(MAKE) $(NPD) -C tools
+
+lib:
+	$(Q)$(MAKE) $(NPD) -C tools lib
 
 clean:
 	$(Q)rm -rf $(OBJDIR)

@@ -1,4 +1,5 @@
 #include "chess/attack.h"
+#include "chess/notation.h"
 #include "chess/piece_config.h"
 
 #include "egtb/egtb_gen_dtc.h"
@@ -289,12 +290,12 @@ int main(int argc, char** argv)
 			};
 			for (const auto& name : opt.materials)
 			{
-				if (!Piece_Config::is_constructible_from(name))
+				if (!is_piece_config_name(name))
 				{
 					std::cout << name << ": invalid material name\n";
 					continue;
 				}
-				const Piece_Config ps(name);
+				const Piece_Config ps = piece_config_from_name(name);
 				if (ps.is_bare_kings())
 				{
 					std::cout << ps.name() << ": <=2 pieces, trivial draw, no table generated\n";
@@ -364,12 +365,12 @@ int main(int argc, char** argv)
 		Unique_Piece_Configs requested;
 		for (const auto& name : opt.materials)
 		{
-			if (!Piece_Config::is_constructible_from(name))
+			if (!is_piece_config_name(name))
 			{
 				std::cerr << "Skipping " << name << ": not a valid piece configuration.\n";
 				continue;
 			}
-			requested.add_unique(Piece_Config(name));
+			requested.add_unique(piece_config_from_name(name));
 		}
 
 		Unique_Piece_Configs closured;

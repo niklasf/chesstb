@@ -11,6 +11,7 @@
 #include "chess/piece_config.h"
 #include "chess/position.h"
 
+#include "util/cache.h"
 #include "util/defines.h"
 
 #include <filesystem>

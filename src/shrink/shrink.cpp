@@ -12,6 +12,7 @@
 #include "egtb/egtb_format.h"
 
 #include "util/filesystem.h"
+#include "util/checksum.h"
 #include "util/memory.h"
 #include "util/mono_uint_vec.h"
 #include "util/span.h"

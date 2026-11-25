@@ -7,7 +7,6 @@
 
 #include <array>
 #include <cstdint>
-#include <vector>
 
 // An opposing pawn pair ('p'): a white and a black pawn on one file, white
 // below black, so neither can pass or promote. White ranks 2..6, black 3..7:
@@ -19,6 +18,7 @@ struct Pair_Group
 	Pair_Group()
 	{
 		m_inverse.fill(-1);
+		size_t n = 0;
 		// Layout: file-major; within a file, ascending white rank then black rank.
 		for (int f = 0; f < 8; ++f)
 		{
@@ -28,17 +28,16 @@ struct Pair_Group
 				{
 					const Square w = sq_make(static_cast<Rank>(wr), file);
 					const Square b = sq_make(static_cast<Rank>(br), file);
-					m_inverse[inv_key(w, b)] = static_cast<int32_t>(m_white.size());
-					m_white.push_back(w);
-					m_black.push_back(b);
+					m_inverse[inv_key(w, b)] = static_cast<int32_t>(n);
+					m_white[n] = w;
+					m_black[n++] = b;
 				}
 		}
-		ASSERT(m_white.size() == PLACEMENT_COUNT);
 	}
 
 	static constexpr size_t PLACEMENT_COUNT = 120;
 
-	NODISCARD size_t table_size() const { return m_white.size(); }
+	NODISCARD static constexpr size_t table_size() { return PLACEMENT_COUNT; }
 
 	NODISCARD Square white_square(Index i) const { return m_white[i]; }
 	NODISCARD Square black_square(Index i) const { return m_black[i]; }
@@ -87,7 +86,7 @@ private:
 		return static_cast<int>(w) * 64 + static_cast<int>(b);
 	}
 
-	std::vector<Square> m_white;
-	std::vector<Square> m_black;
+	std::array<Square, PLACEMENT_COUNT> m_white;
+	std::array<Square, PLACEMENT_COUNT> m_black;
 	std::array<int32_t, 64 * 64> m_inverse;
 };

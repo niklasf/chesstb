@@ -4,6 +4,7 @@
 //   ./tools/compare_syzygy --list FILE
 //   ./tools/compare_syzygy --enumerate N
 
+#include "chess/notation.h"
 #include "chess/piece_config.h"
 
 #include "probe/probe.h"
@@ -97,10 +98,10 @@ struct Options
 
 static bool compare_material(const Options& opt, const char* name)
 {
-	if (!Piece_Config::is_constructible_from(std::string(name))) {
+	if (!is_piece_config_name(std::string(name))) {
 		std::printf("%-8s: invalid name\n", name); return false;
 	}
-	Piece_Config ps(std::string{name});
+	const Piece_Config ps = piece_config_from_name(std::string(name));
 
 	// Accept both full and dropped-STM WDL files; generator lookup rejects the latter.
 	if (!std::filesystem::exists(std::filesystem::path(opt.wdl_dir) / (ps.name() + ".lzw"))) {
@@ -165,7 +166,7 @@ static bool compare_material(const Options& opt, const char* name)
 
 						++s.mismatches;
 						if (s.examples.size() < 5) {
-							char fen[128]; pos.to_fen(Span(fen, 128));
+							char fen[128]; position_to_fen(pos, Span(fen, 128));
 							s.examples.push_back(std::string(name) + " idx=" + std::to_string(i)
 								+ " stm=" + (stm == WHITE ? "W" : "B") + " fen=" + fen
 								+ " ours=" + wdl_name(got) + " syzygy=" + wdl_name(want));

@@ -5,6 +5,7 @@
 #include "egtb/piece_config_for_gen.h"
 
 #include "util/defines.h"
+#include "util/checksum.h"
 #include "util/memory.h"
 #include "util/param.h"
 #include "util/span.h"

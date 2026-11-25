@@ -9,6 +9,7 @@
 //   ./check_fixedpoint --enumerate 5 --wdl ./wdl --dtz ./dtz --dtm ./dtm
 
 #include "chess/castling_group.h"
+#include "chess/notation.h"
 #include "chess/piece_config.h"
 #include "chess/position.h"
 
@@ -112,35 +113,27 @@ struct Config_And_Literal_Key {
 
 Config_And_Literal_Key piece_config_and_literal_key_from_position_local(const Position& pos)
 {
-	Square castling_rooks[COLOR_NB * Castling_Group::MAX_RIGHTS];
-	size_t num_castling_rooks = 0;
-	Piece_Config::Castling_Rights_Counts rights{ 0, 0 };
-	for (const Color c : { WHITE, BLACK })
-		for (const bool h_side : { false, true })
-			if (pos.can_castle(c, h_side))
-			{
-				castling_rooks[num_castling_rooks++] = pos.castling_rook_square(c, h_side);
-				rights[c] += 1;
-			}
+	const Bitboard castling_rooks = pos.castling();
+	const Piece_Config::Castling_Rights_Counts rights{ pos.castling_rooks(WHITE).num_set_bits(),
+	                                                   pos.castling_rooks(BLACK).num_set_bits() };
 
 	std::array<Piece, MAX_MAN> pieces;
 	size_t n = 0;
 	Material_Key literal_key;
-	for (Piece pc : ALL_PIECES)
-	{
-		Bitboard b = pos.piece_bb(pc);
-		while (b)
+	for (const Color c : { WHITE, BLACK })
+		for (int t = PAWN; t <= KING; ++t)
 		{
-			const Square sq = b.pop_first_square();
-			bool holds_right = false;
-			for (size_t i = 0; i < num_castling_rooks; ++i)
-				if (castling_rooks[i] == sq) { holds_right = true; break; }
-			if (holds_right) continue;
-			pieces[n++] = pc;
-			literal_key.add_piece(pc);
+			const Piece pc = piece_make(c, Piece_Type(t));
+			Bitboard b = pos.piece_bb(pc);
+			while (b)
+			{
+				const Square sq = b.pop_first_square();
+				if (castling_rooks.has_square(sq)) continue;
+				pieces[n++] = pc;
+				literal_key.add_piece(pc);
+			}
 		}
-	}
-	if (num_castling_rooks > 0)
+	if (castling_rooks)
 		literal_key.add_castling(rights[WHITE], rights[BLACK]);
 
 	return { Piece_Config(Const_Span<Piece>(pieces.data(), n), rights), literal_key };
@@ -284,7 +277,7 @@ Child_DTZ effective_child_dtz_after_move(Probe_Tables& tables, const Position& p
 	auto set_cursed_exit = [&] {
 		best.cursed_exit = (best.wdl == WDL_Entry::CURSED_WIN
 		                    || best.wdl == WDL_Entry::BLESSED_LOSS)
-			&& popcnt(child.pos.castling()) < popcnt(parent.castling());
+			&& child.pos.castling().num_set_bits() < parent.castling().num_set_bits();
 	};
 	if (child.ep == SQ_END)
 	{
@@ -366,7 +359,7 @@ Thread_Pool& global_pool()
 std::string fen_of(const Position& pos)
 {
 	char fen[128] = {};
-	pos.to_fen(Span(fen, sizeof(fen)));
+	position_to_fen(pos, Span(fen, sizeof(fen)));
 	return std::string(fen);
 }
 
@@ -553,12 +546,12 @@ bool dtz_values_match(WDL_Entry w, uint16_t actual, bool actual_rounded,
 
 bool check_material(const Options& opt, const std::string& name)
 {
-	if (!Piece_Config::is_constructible_from(name)) {
+	if (!is_piece_config_name(name)) {
 		std::printf("%-8s: invalid material name\n", name.c_str());
 		return false;
 	}
 
-	Piece_Config ps(name);
+	Piece_Config ps = piece_config_from_name(name);
 	const std::filesystem::path wdl_path = table_path(opt.wdl_dir, ps, WDL_EXT);
 	const std::filesystem::path dtz_path = table_path(opt.dtz_dir, ps, DTZ_EXT);
 

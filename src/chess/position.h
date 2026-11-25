@@ -14,14 +14,11 @@
 struct Position
 {
 	Bitboard m_pieces[PIECE_NB];     // [WHITE_OCCUPY] = all white, [BLACK_OCCUPY] = all black
-	Bitboard m_occupied;             // = m_pieces[WHITE_OCCUPY] | m_pieces[BLACK_OCCUPY]
-	int8_t   m_piece_counts[PIECE_NB];
+#if defined(CHESSTB_GEN)
 	Piece    m_squares[SQUARE_NB];
+#endif
 	Color    m_turn;
-	uint8_t  m_castling;             // Castling_Rights bitmask; 0 for rights-free tables
-	// Home square of each right's rook, by castling_right_index. Only the entries
-	// whose bit is set in m_castling carry meaning.
-	Square   m_castling_rook[CASTLING_RIGHT_NB];
+	Bitboard m_castling_rooks;       // the rooks still holding a castling right
 
 	void clear()
 	{
@@ -31,83 +28,46 @@ struct Position
 	NODISCARD Color turn() const { return m_turn; }
 	void set_turn(Color c) { m_turn = c; }
 
-	NODISCARD uint8_t castling() const { return m_castling; }
-
-	NODISCARD bool can_castle(Color c, bool h_side) const
-	{
-		return (m_castling & castling_right(c, h_side)) != 0;
-	}
-
-	NODISCARD Square castling_rook_square(Color c, bool h_side) const
-	{
-		ASSERT(can_castle(c, h_side));
-		return m_castling_rook[castling_right_index(c, h_side)];
-	}
+	NODISCARD Bitboard castling() const { return m_castling_rooks; }
 
 	// The rooks of `c` still holding a castling right.
-	NODISCARD Bitboard castling_rooks(Color c) const
-	{
-		Bitboard b = Bitboard::make_empty();
-		for (const bool h_side : { false, true })
-			if (can_castle(c, h_side)) b |= castling_rook_square(c, h_side);
-		return b;
-	}
-
-		void set_castling_right(Color c, bool h_side, Square rook_sq)
-	{
-		m_castling |= castling_right(c, h_side);
-		m_castling_rook[castling_right_index(c, h_side)] = rook_sq;
-	}
-
-	NODISCARD bool castling_rights_are_consistent() const
-	{
-		for (const Color c : { WHITE, BLACK })
-		{
-			if (!(m_castling & castling_rights_of(c))) continue;
-			const Square ksq = king_square(c);
-			if (sq_rank(ksq) != castling_home_rank(c)) return false;
-			for (const bool h_side : { true, false })
-			{
-				if (!can_castle(c, h_side)) continue;
-				const Square r = m_castling_rook[castling_right_index(c, h_side)];
-				if (m_squares[r] != piece_make(c, ROOK)) return false;
-				if (sq_rank(r) != castling_home_rank(c)) return false;
-				if (h_side ? (sq_file(r) <= sq_file(ksq)) : (sq_file(r) >= sq_file(ksq)))
-					return false;
-			}
-		}
-		return true;
-	}
+	NODISCARD Bitboard castling_rooks(Color c) const { return m_castling_rooks & castling_home_rank(c); }
 
 	void update_castling_rights(Square from, Square to)
 	{
 		for (const Color c : { WHITE, BLACK })
-		{
-			if (!(m_castling & castling_rights_of(c))) continue;
-			if (from == king_square(c))
-			{
-				m_castling &= static_cast<uint8_t>(~castling_rights_of(c));
-				continue;
-			}
-			for (const bool h_side : { true, false })
-			{
-				if (!can_castle(c, h_side)) continue;
-				const Square r = m_castling_rook[castling_right_index(c, h_side)];
-				if (r == from || r == to)
-					m_castling &= static_cast<uint8_t>(~castling_right(c, h_side));
-			}
-		}
+			if (from == king_square(c)) m_castling_rooks &= ~castling_rooks(c);
+		m_castling_rooks &= ~(square_bb(from) | square_bb(to));
 	}
 
-	NODISCARD bool is_empty(Square sq) const { return m_squares[sq] == PIECE_NONE; }
+	NODISCARD bool is_empty(Square sq) const { return !occupied().has_square(sq); }
 
 	NODISCARD FORCE_INLINE bool move_is_capture(Move m) const
 	{
 		if (m.is_castling()) return false;
-		return m.is_ep_capture() || m_squares[m.to()] != PIECE_NONE;
+		return m.is_ep_capture() || occupied().has_square(m.to());
 	}
-	NODISCARD Piece piece_at(Square sq) const { return m_squares[sq]; }
-	NODISCARD const Bitboard& occupied() const { return m_occupied; }
+
+	NODISCARD FORCE_INLINE Piece piece_at(Square sq) const
+	{
+#if defined(CHESSTB_GEN)
+		return m_squares[sq];
+#else
+		if (!occupied().has_square(sq)) return PIECE_NONE;
+		const Color c = m_pieces[WHITE_OCCUPY].has_square(sq) ? WHITE : BLACK;
+		Piece_Type pt = PAWN;
+		while (!m_pieces[piece_make(c, pt)].has_square(sq)) pt = static_cast<Piece_Type>(pt + 1);
+		return piece_make(c, pt);
+#endif
+	}
+
+	FORCE_INLINE void set_square([[maybe_unused]] Square sq, [[maybe_unused]] Piece pc)
+	{
+#if defined(CHESSTB_GEN)
+		m_squares[sq] = pc;
+#endif
+	}
+	NODISCARD Bitboard occupied() const { return m_pieces[WHITE_OCCUPY] | m_pieces[BLACK_OCCUPY]; }
 	NODISCARD const Bitboard& color_bb(Color c) const { return m_pieces[piece_occupy(c)]; }
 	NODISCARD const Bitboard& piece_bb(Piece p) const { return m_pieces[p]; }
 
@@ -117,28 +77,23 @@ struct Position
 		return m_pieces[piece_make(c, KING)].peek_first_square();
 	}
 
-	// Put / remove a piece, keeping bitboards, m_squares and counts in sync.
 	FORCE_INLINE void put_piece(Piece pc, Square sq)
 	{
-		ASSERT(m_squares[sq] == PIECE_NONE);
+		ASSERT(is_empty(sq));
 		const Bitboard sb = square_bb(sq);
 		m_pieces[pc] |= sb;
 		m_pieces[piece_occupy(piece_color(pc))] |= sb;
-		m_occupied |= sb;
-		m_squares[sq] = pc;
-		m_piece_counts[pc] += 1;
+		set_square(sq, pc);
 	}
 
 	FORCE_INLINE void remove_piece(Square sq)
 	{
-		const Piece pc = m_squares[sq];
+		const Piece pc = piece_at(sq);
 		ASSERT(pc != PIECE_NONE);
 		const Bitboard sb = square_bb(sq);
 		m_pieces[pc] ^= sb;
 		m_pieces[piece_occupy(piece_color(pc))] ^= sb;
-		m_occupied ^= sb;
-		m_squares[sq] = PIECE_NONE;
-		m_piece_counts[pc] -= 1;
+		set_square(sq, PIECE_NONE);
 	}
 
 	NODISCARD FORCE_INLINE Bitboard attackers_to(Square sq, Color c, Bitboard occ) const
@@ -157,7 +112,7 @@ struct Position
 
 	NODISCARD FORCE_INLINE bool is_attacked_by(Square sq, Color attacker_color) const
 	{
-		return attackers_to(sq, attacker_color, m_occupied) != Bitboard::make_empty();
+		return attackers_to(sq, attacker_color, occupied()) != Bitboard::make_empty();
 	}
 
 	NODISCARD FORCE_INLINE bool is_in_check() const
@@ -166,16 +121,16 @@ struct Position
 	}
 
 	// do_move returns the piece captured (PIECE_NONE if none) and folds the
-	// castling-rights update in, so undo needs the pre-move mask handed back.
+	// castling-rights update in, so undo needs the pre-move rights handed back.
 	Piece do_move(Move m);
-	void  undo_move(Move m, Piece captured, uint8_t prev_castling);
+	void  undo_move(Move m, Piece captured, Bitboard prev_castling);
 
 	// No EP, no king-in-check filter. `f` returns true to stop; returns true iff it did.
 	template <typename F>
 	GEN_FORCE_INLINE bool visit_pseudo_legal_moves(F&& f) const
 	{
 		const Color me = m_turn;
-		const Bitboard occ = m_occupied;
+		const Bitboard occ = occupied();
 		const Bitboard target = ~m_pieces[piece_occupy(me)];
 
 		Bitboard knights = m_pieces[piece_make(me, KNIGHT)];
@@ -208,18 +163,18 @@ struct Position
 		while (kmoves)
 			if (f(Move::make_quiet(ksq, kmoves.pop_first_square()))) return true;
 
-		if (m_castling & castling_rights_of(me))
+		if (castling_rooks(me))
 		{
-			for (const bool h_side : { true, false })
+			for (Bitboard rooks = castling_rooks(me); rooks;)
 			{
-				if (!can_castle(me, h_side)) continue;
-				const Square rfrom = castling_rook_square(me, h_side);
+				const Square rfrom = rooks.pop_last_square();
+				const bool h_side = rfrom > ksq;
 				const Square kto = castling_king_to(me, h_side);
 				const Square rto = castling_rook_to(me, h_side);
 				const Bitboard path = (rank_span_bb(ksq, kto) | rank_span_bb(rfrom, rto))
 				                    & ~(square_bb(ksq) | square_bb(rfrom));
 				if (occ & path) continue;
-				if (f(Move::make_castling(ksq, kto))) return true;
+				if (f(Move::make_castling(ksq, rfrom))) return true;
 			}
 		}
 
@@ -278,10 +233,10 @@ struct Position
 			const int fi = static_cast<int>(target_file) + df;
 			if (fi < 0 || fi >= 8) continue;
 			const Square from = sq_make(pawn_rank, static_cast<File>(fi));
-			if (m_squares[from] != piece_make(me, PAWN)) continue;
+			if (!m_pieces[piece_make(me, PAWN)].has_square(from)) continue;
 
 			const Square cap_sq = sq_make(pawn_rank, target_file);
-			if (m_squares[cap_sq] != piece_make(color_opp(me), PAWN)) continue;
+			if (!m_pieces[piece_make(color_opp(me), PAWN)].has_square(cap_sq)) continue;
 
 			if (f(Move::make_ep_capture(from, ep_square))) return true;
 		}
@@ -326,7 +281,7 @@ struct Position
 	FORCE_INLINE void visit_pseudo_legal_pre_quiets(F&& f) const
 	{
 		const Color mover = color_opp(m_turn);
-		const Bitboard occ = m_occupied;
+		const Bitboard occ = occupied();
 		const Bitboard empty = ~occ;
 
 		Bitboard knights = m_pieces[piece_make(mover, KNIGHT)];
@@ -368,26 +323,26 @@ struct Position
 
 		if (m.is_castling())
 		{
+			const bool h_side = to > from;
+			const Square king_to = castling_king_to(m_turn, h_side);
+			const Square rook_to = castling_rook_to(m_turn, h_side);
 			if (is_attacked_by(from, opp)) return false;
-			if (to != from)
+			if (king_to != from)
 			{
-				const int step = (to > from) ? 1 : -1;
-				for (Square s = from + step; s != to; s = s + step)
+				const int step = (king_to > from) ? 1 : -1;
+				for (Square s = from + step; s != king_to; s = s + step)
 					if (is_attacked_by(s, opp)) return false;
 			}
 
-			const bool h_side = sq_file(to) == FILE_G;
-			const Square rook_from = castling_rook_square(m_turn, h_side);
-			const Square rook_to   = castling_rook_to(m_turn, h_side);
 			const Bitboard occ_castled =
-				((m_occupied ^ square_bb(from)) ^ square_bb(rook_from))
-				| square_bb(to) | square_bb(rook_to);
-			return attackers_to(to, opp, occ_castled) == Bitboard::make_empty();
+				((occupied() ^ square_bb(from)) ^ square_bb(to))
+				| square_bb(king_to) | square_bb(rook_to);
+			return attackers_to(king_to, opp, occ_castled) == Bitboard::make_empty();
 		}
 		const Square ksq_old = king_square(m_turn);
 		const Square ksq = (from == ksq_old) ? to : ksq_old;
 
-		Bitboard occ_after = (m_occupied ^ square_bb(from)) | square_bb(to);
+		Bitboard occ_after = (occupied() ^ square_bb(from)) | square_bb(to);
 		Bitboard captured_mask = Bitboard::make_empty();
 		if (m.is_ep_capture())
 		{
@@ -395,7 +350,7 @@ struct Position
 			occ_after ^= square_bb(cap_sq);
 			captured_mask = square_bb(cap_sq);
 		}
-		else if (m_squares[to] != PIECE_NONE)
+		else if (occupied().has_square(to))
 		{
 			captured_mask = square_bb(to);
 		}
@@ -419,7 +374,7 @@ struct Position
 		const Color me  = m_turn;
 		const Color opp = color_opp(me);
 		const Square ksq = king_square(me);
-		const Bitboard occ = m_occupied;
+		const Bitboard occ = occupied();
 		const Bitboard own = m_pieces[piece_occupy(me)];
 
 		const Bitboard opp_rq = m_pieces[piece_make(opp, ROOK)]   | m_pieces[piece_make(opp, QUEEN)];
@@ -477,38 +432,31 @@ struct Position
 		return !is_attacked_by(king_square(color_opp(m_turn)), m_turn);
 	}
 
-	static Position from_fen(const std::string& fen);
-	void to_fen(Span<char> out) const;
-
 	// Carries no en-passant state — the caller must mirror its own ep square.
 	NODISCARD Position mirror() const
 	{
 		Position swapped;
 		swapped.clear();
-		Bitboard occ = m_occupied;
+		Bitboard occ = occupied();
 		while (occ)
 		{
 			const Square sq = occ.pop_first_square();
-			swapped.put_piece(piece_opp_color(m_squares[sq]), sq_rank_mirror(sq));
+			swapped.put_piece(piece_opp_color(piece_at(sq)), sq_rank_mirror(sq));
 		}
 		swapped.m_turn = color_opp(m_turn);
-		swapped.m_castling = castling_rights_color_swapped(m_castling);
-		for (const Color c : { WHITE, BLACK })
-			for (const bool h_side : { true, false })
-				if (can_castle(c, h_side))
-					swapped.m_castling_rook[castling_right_index(color_opp(c), h_side)] =
-						sq_rank_mirror(m_castling_rook[castling_right_index(c, h_side)]);
+		swapped.m_castling_rooks = m_castling_rooks.mirror_ranks();
 		return swapped;
 	}
 
 	NODISCARD Material_Key material_key() const
 	{
 		Material_Key k;
-		for (Piece pc : ALL_PIECES)
-		{
-			const size_t cnt = m_pieces[pc].num_set_bits();
-			for (size_t i = 0; i < cnt; ++i) k.add_piece(pc);
-		}
+		for (const Color c : { WHITE, BLACK })
+			for (int t = PAWN; t <= KING; ++t)
+			{
+				const Piece pc = piece_make(c, Piece_Type(t));
+				for (size_t i = m_pieces[pc].num_set_bits(); i > 0; --i) k.add_piece(pc);
+			}
 		return k;
 	}
 };

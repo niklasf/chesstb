@@ -83,7 +83,7 @@ private:
 
 		Position& p = pos_gen.board_unchecked();
 		const Color opp = color_opp(p.turn());
-		const uint8_t rights_before = p.castling();
+		const Bitboard rights_before = p.castling();
 		const Square ep_sq = ep_square_of_double_push(dp_move);
 		const Piece captured_by_dp = p.do_move(dp_move);
 

@@ -33,19 +33,20 @@ endif
 
 OBJDIR := $(ROOT)/obj
 
-# The prober decodes with src/util/decompress.h; of lib/ it needs only xxhash
-# (the tables' checksums). The generator's encoders stay out.
-COMMON_C := $(ROOT)/lib/zstd/common/xxhash.c
-
+# What the prober and its API define.
 COMMON_CXX := \
   $(wildcard $(ROOT)/src/chess/*.cpp) \
-  $(filter-out $(ROOT)/src/util/compress.cpp,$(wildcard $(ROOT)/src/util/*.cpp)) \
+  $(ROOT)/src/util/filesystem.cpp \
   $(wildcard $(ROOT)/src/probe/*.cpp)
 
 HDRS := $(shell find $(ROOT)/src $(ROOT)/lib -name '*.h' -o -name '*.hpp' 2>/dev/null)
 LIB_HDRS := $(shell find $(ROOT)/lib -name '*.h' -o -name '*.hpp' 2>/dev/null)
 
-COMMON_C_OBJ := $(patsubst $(ROOT)/%.c,$(OBJDIR)/%.o,$(COMMON_C))
+# The prober as drop-in sources in namespace chesstb (`make lib`):
+# obj/libchesstb/chesstb.h and chesstb.cpp. A host copies them and compiles
+# chesstb.cpp with its own flags. probe_fen builds the same way, without the
+# tree's include paths.
+LIBDIR := $(OBJDIR)/libchesstb
 
 MAKEFILE := $(lastword $(MAKEFILE_LIST))
 
@@ -60,20 +61,34 @@ $(OBJDIR)/%.o: $(ROOT)/%.c $(LIB_HDRS) $(MAKEFILE)
 	$(E) "  CC      $(patsubst $(ROOT)/%,%,$<)"
 	$(Q)$(CXX) $(CFLAGS) -x c -c $< -o $@
 
-.PHONY: all probe clean
+.PHONY: all probe lib clean
 .DEFAULT_GOAL := all
 all:   probe_fen
 probe: probe_fen
 
-probe_fen: probe_fen.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(HDRS) $(MAKEFILE)
+probe_fen: probe_fen.cpp $(LIBDIR)/chesstb.cpp $(MAKEFILE)
 	$(E) "  CXXLD   probe_fen"
-	$(Q)$(CXX) $(CXXFLAGS) \
-	    -x c++ probe_fen.cpp $(COMMON_CXX) \
-	    -x none $(COMMON_C_OBJ) \
-	    $(LDFLAGS) -o $@
+	$(Q)$(CXX) $(filter-out -I%,$(CXXFLAGS)) -DCHESSTB_NOTATION -I$(LIBDIR) probe_fen.cpp $(LIBDIR)/chesstb.cpp $(LDFLAGS) -o $@
+
+lib: $(LIBDIR)/chesstb.cpp
+
+$(LIBDIR)/chesstb.cpp: lib.py $(COMMON_CXX) $(HDRS) $(MAKEFILE)
+	$(E) "  GEN     libchesstb"
+	$(Q)python3 lib.py $(LIBDIR) $(COMMON_CXX)
+
+# A verifier: its source in the library's form (lib.py -t) built with
+# chesstb.cpp and the index -> position inverse, whose divisions need intrin.cpp,
+# plus any objects among its prerequisites.
+define VERIFIER
+	$(E) "  CXXLD   $@"
+	$(Q)python3 lib.py -t $(VERIFIER_I) $(OBJDIR)/tools $< $(ROOT)/src/util/intrin.cpp
+	$(Q)$(CXX) $(CXXFLAGS) $(VERIFIER_I) -DCHESSTB_INDEX_INVERSE -DCHESSTB_NOTATION \
+	    $(OBJDIR)/tools/$< $(LIBDIR)/chesstb.cpp $(filter %.o,$^) $(LDFLAGS) -o $@
+endef
 
 clean:
 	$(Q)rm -f probe_fen compare_syzygy check_tables check_fixedpoint
+	$(Q)rm -rf $(LIBDIR) $(OBJDIR)/tools
 
 # Verifiers. No target builds these; uncomment the rule you want and run
 # `make -C tools <binary>`. They walk tables index by index, so they build the
@@ -86,23 +101,14 @@ clean:
 # $(FATHOM_C_OBJ): CFLAGS += -I$(ROOT)/lib/Fathom/src
 # $(FATHOM_C_OBJ): $(wildcard $(ROOT)/lib/Fathom/src/*.c $(ROOT)/lib/Fathom/src/*.h)
 #
-# compare_syzygy: compare_syzygy.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(FATHOM_C_OBJ) $(HDRS) $(MAKEFILE)
-#	$(E) "  CXXLD   compare_syzygy"
-#	$(Q)$(CXX) $(CXXFLAGS) -DCHESSTB_INDEX_INVERSE -I$(ROOT)/lib/Fathom/src \
-#	    -x c++ compare_syzygy.cpp $(COMMON_CXX) \
-#	    -x none $(COMMON_C_OBJ) $(FATHOM_C_OBJ) \
-#	    $(LDFLAGS) -o $@
+# XXHASH_OBJ := $(OBJDIR)/lib/zstd/common/xxhash.o
 #
-# check_tables: check_tables.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(HDRS) $(MAKEFILE)
-#	$(E) "  CXXLD   check_tables"
-#	$(Q)$(CXX) $(CXXFLAGS) -DCHESSTB_INDEX_INVERSE \
-#	    -x c++ check_tables.cpp $(COMMON_CXX) \
-#	    -x none $(COMMON_C_OBJ) \
-#	    $(LDFLAGS) -o $@
+# compare_syzygy: VERIFIER_I := -I$(ROOT)/lib/Fathom/src
+# compare_syzygy: compare_syzygy.cpp $(FATHOM_C_OBJ) $(LIBDIR)/chesstb.cpp $(MAKEFILE)
+#	$(VERIFIER)
 #
-# check_fixedpoint: check_fixedpoint.cpp $(COMMON_CXX) $(COMMON_C_OBJ) $(HDRS) $(MAKEFILE)
-#	$(E) "  CXXLD   check_fixedpoint"
-#	$(Q)$(CXX) $(CXXFLAGS) -DCHESSTB_INDEX_INVERSE \
-#	    -x c++ check_fixedpoint.cpp $(COMMON_CXX) \
-#	    -x none $(COMMON_C_OBJ) \
-#	    $(LDFLAGS) -o $@
+# check_tables: check_tables.cpp $(XXHASH_OBJ) $(LIBDIR)/chesstb.cpp $(MAKEFILE)
+#	$(VERIFIER)
+#
+# check_fixedpoint: check_fixedpoint.cpp $(LIBDIR)/chesstb.cpp $(MAKEFILE)
+#	$(VERIFIER)

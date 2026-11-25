@@ -20,6 +20,7 @@
 //   ./check_tables --wdl ./wdl --dtz ./dtz --dtc ./dtc --dtm ./dtm --dtm50 ./dtm50 -r KRRK
 
 #include "chess/move.h"
+#include "chess/notation.h"
 #include "chess/piece_config.h"
 #include "chess/position.h"
 
@@ -29,6 +30,7 @@
 #include "probe/position_index.h"
 #include "probe/table_files.h"
 
+#include "util/checksum.h"
 #include "util/progress_bar.h"
 #include "util/thread_pool.h"
 
@@ -133,7 +135,7 @@ void push_sample(Shard& s, size_t cap,
 {
 	if (s.samples.size() >= cap) return;
 	char fen[128] = {};
-	pos.to_fen(Span(fen, 128));
+	position_to_fen(pos, Span(fen, 128));
 	char line[256];
 	std::snprintf(line, sizeof(line),
 		"[%s] %s idx=%zu stm=%s wdl=%s value=%u fen=%s",
@@ -147,16 +149,19 @@ bool open_one(const Piece_Config& ps, const std::string& dir, const char* ext)
 {
 	const std::filesystem::path path = std::filesystem::path(dir) / (ps.name() + ext);
 	if (!std::filesystem::exists(path)) return false;
+	Memory_Mapped_File m;
+	if (!m.open_readonly(path.c_str()) || !end_checksum_ok(m.data_span(), TABLE_CHECKSUM_INIT))
+		throw std::runtime_error("Invalid checksum " + path.string());
 	File f;
-	f.load(ps, path, /*verify_checksum=*/true);
+	f.load(ps, path);
 	return true;
 }
 
 void open_material(const Options& opt, const std::string& name)
 {
-	if (!Piece_Config::is_constructible_from(name))
+	if (!is_piece_config_name(name))
 		throw std::runtime_error("invalid material name " + name);
-	Piece_Config ps(name);
+	Piece_Config ps = piece_config_from_name(name);
 
 	const bool wdl   = open_one<WDL_File>  (ps, opt.wdl_dir,   WDL_EXT);
 	const bool dtz   = open_one<DTZ_File>  (ps, opt.dtz_dir,   DTZ_EXT);
@@ -175,10 +180,10 @@ void open_material(const Options& opt, const std::string& name)
 
 bool check_material(const Options& opt, const std::string& name)
 {
-	if (!Piece_Config::is_constructible_from(name)) {
+	if (!is_piece_config_name(name)) {
 		std::printf("%-8s: invalid material name\n", name.c_str()); return false;
 	}
-	Piece_Config ps(name);
+	Piece_Config ps = piece_config_from_name(name);
 
 	Position_Index_Config epsi(ps);
 	// Native (identity-permutation) index — the inverse of position_from_index.

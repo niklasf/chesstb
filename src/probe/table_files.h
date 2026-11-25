@@ -154,8 +154,7 @@ struct Table_File
 		static_assert(COLOR_NB == 2);
 	}
 
-	void load(const Piece_Config& ps, const std::filesystem::path& path,
-	          bool verify_checksum = false);
+	void load(const Piece_Config& ps, const std::filesystem::path& path);
 
 	NODISCARD Board_Index storage_index(Color c, const Position& pos) const
 	{
@@ -180,8 +179,7 @@ struct Table_File
 };
 
 template <typename Traits>
-void Table_File<Traits>::load(const Piece_Config& ps, const std::filesystem::path& path,
-                              bool verify_checksum)
+void Table_File<Traits>::load(const Piece_Config& ps, const std::filesystem::path& path)
 {
 	if (!mapped.open_readonly(path.c_str()))
 		throw std::runtime_error(std::string("Cannot open ") + Traits::NAME + " file " + path.string());
@@ -191,8 +189,6 @@ void Table_File<Traits>::load(const Piece_Config& ps, const std::filesystem::pat
 		throw std::runtime_error(std::string("Invalid ") + Traits::NAME + " file size " + path.string());
 
 	Serial_Memory_Reader reader(input);
-	if (verify_checksum && !reader.is_end_checksum_ok(TABLE_CHECKSUM_INIT))
-		throw std::runtime_error(std::string("Invalid ") + Traits::NAME + " checksum " + path.string());
 
 	const uint32_t magic = reader.read<uint32_t>();
 	if (magic != static_cast<uint32_t>(Traits::MAGIC))
